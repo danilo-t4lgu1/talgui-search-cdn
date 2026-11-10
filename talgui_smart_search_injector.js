@@ -19,7 +19,7 @@
 
   // Configurações Globais
   const CONFIG = {
-    remoteConfigUrl: 'https://cdn.jsdelivr.net/gh/danilo-t4lgu1/talgui-search-cdn@main/config.json',
+    remoteConfigUrl: 'https://raw.githubusercontent.com/danilo-t4lgu1/talgui-search-cdn/main/config.json',
     cdnCatalogUrl: 'https://cdn.jsdelivr.net/gh/danilo-t4lgu1/talgui-search-cdn@main/search_catalog.min.json',
     imgPrefix: 'https://acdn-us.mitiendanube.com/stores/007/014/041/products/',
     cacheKey: 'talgui_search_catalog_v2',

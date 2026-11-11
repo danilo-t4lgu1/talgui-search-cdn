@@ -1,9 +1,9 @@
 {
-  "active": true,
+  "active": false,
   "version": "1.0.0",
   "name": "Talgui Smart Search & Autocomplete",
-  "updated_at": "2026-11-10T20:03:26.826Z",
-  "kill_switch_reason": "",
+  "updated_at": "2026-11-11T14:31:34.979Z",
+  "kill_switch_reason": "Desligado por precaução",
   "features": {
     "autocomplete": true,
     "zero_results_rescue": true

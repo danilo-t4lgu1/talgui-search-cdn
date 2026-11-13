@@ -1,0 +1,15 @@
+{
+  "v": 2,
+  "active": false,
+  "injetor": "50b4990d5e838c097374105ae217e1d2355548aa",
+  "sri": "sha384-1s03+GI99bqSgeGUf5XlRd+FpQ2nQUTuhT9Jzagl5rgVhCsIjtzCcrsYt3vwbhkN",
+  "catalogo": "main",
+  "min_loader": 1,
+  "features": {
+    "autocomplete": true,
+    "resgate": true,
+    "desktop": true
+  },
+  "updated_at": "2026-11-13T14:02:00.978Z",
+  "kill_switch_reason": ""
+}

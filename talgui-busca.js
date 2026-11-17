@@ -18,6 +18,9 @@
  *      3 tamanhos na oferta e sinônimos de categoria ("conjunto" = Look Inteiro).
  *   5. busca curada por termo (wedding/casamento) em blocos com título, ver TG_BUSCAS_CURADAS (quick 20261116-busca-curada-wedding); usa o
  *      campo opcional g (tags de ocasião) do catálogo e degrada sem ele.
+ *   6. quick 20261117-basico-producao (pacote A): (a) tecidos compostos em nome ("linh" acha Linho e Viscolinho; viscose + linho), ver
+ *      TG_TECIDO_PARTES; (b) esgotado nominal: com a lista enxuta de esgotados (4º argumento de runSearch, carregada sob demanda pelo injetor),
+ *      "pantalo" acha a Pantalona esgotada e oferece parecidas com grade completa, ver tgBuscaEsgotado. Sem a lista, nada muda.
  * A ORDEM do array do catálogo é a ordem real de vendas/boost; ela é o ranking de "mais vendido" (campo b vem em faixas, não serve de desempate fino).
  * Os marcadores node:inicio / node:fim delimitam a exportação para o Node; o build (plano 02-04) remove esse bloco do arquivo do navegador.
  */
@@ -327,24 +330,58 @@ function tgCalcOfertas(catalogo, filtro, minTam) {
   return ofertas;
 }
 
+// Tecidos compostos (17/11, quick basico-producao): a palavra do nome também vale pelas partes. "Viscolinho" é viscose + linho, então quem busca
+// "linho", "linh" ou "viscose" acha as peças em viscolinho (antes "linh" dava zero resultado e "linho" caía em "Vinho"). As partes entram como
+// palavras extras do nome (não mudam o nome mostrado). Só acerto exato ou por prefixo; o erro de digitação só vale se a palavra digitada NÃO
+// existe inteira em nenhum nome do catálogo e também não está a 1 letra de uma palavra que existe (assim "vinho" e "inho" continuam sendo só
+// vinho e não puxam o viscolinho por parecerem "linho").
+var TG_TECIDO_PARTES = { 'viscolinho': ['viscose', 'linho'] };
+
+// A palavra digitada pode ser tratada como erro de digitação de uma parte de tecido? Não, se ela já é uma palavra real do catálogo ou está a 1 letra de uma.
+function tgTypoLivre(qt, prep) {
+  var i, lista;
+  if (!prep.typoLivre) prep.typoLivre = {};
+  if (Object.prototype.hasOwnProperty.call(prep.typoLivre, qt)) return prep.typoLivre[qt];
+  if (prep.vocab[qt]) { prep.typoLivre[qt] = false; return false; }
+  lista = prep.vocabLista || (prep.vocabLista = Object.keys(prep.vocab));
+  for (i = 0; i < lista.length; i++) {
+    if (levenshtein(qt, lista[i], 1) <= 1) { prep.typoLivre[qt] = false; return false; }
+  }
+  prep.typoLivre[qt] = true;
+  return true;
+}
+
+function tgTokensVirtuais(nTokens) {
+  var out = [], i, j, partes;
+  for (i = 0; i < nTokens.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(TG_TECIDO_PARTES, nTokens[i])) continue;
+    partes = TG_TECIDO_PARTES[nTokens[i]];
+    for (j = 0; j < partes.length; j++) { if (nTokens.indexOf(partes[j]) < 0 && out.indexOf(partes[j]) < 0) out.push(partes[j]); }
+  }
+  return out;
+}
+
 // Prepara (uma vez por catálogo carregado) as ofertas, as cores e a posição (ranking de vendas) dos produtos. Não muda o catálogo.
 var tgPreparoCache = typeof WeakMap === 'function' ? new WeakMap() : null;
 
 function tgPreparar(catalogo) {
-  var prep, i, it, cores, pos;
+  var prep, i, it, cores, pos, vocab, nt, k;
   if (tgPreparoCache && catalogo && typeof catalogo === 'object') {
     prep = tgPreparoCache.get(catalogo);
     if (prep) return prep;
   }
   cores = new Map();
   pos = new Map();
+  vocab = {}; // todas as palavras que existem inteiras em algum nome (qualquer estoque)
   for (i = 0; i < catalogo.length; i++) {
     it = catalogo[i];
     if (!it || typeof it !== 'object') continue;
     cores.set(it, tgCorDoNome(it.n));
     pos.set(it, i);
+    nt = normalizeText(it.n).split(' ');
+    for (k = 0; k < nt.length; k++) vocab[nt[k]] = true;
   }
-  prep = { ofertas: tgCalcOfertas(catalogo, null, TG_OFERTAS_MIN_TAMANHOS), cores: cores, pos: pos, nicho: {} };
+  prep = { ofertas: tgCalcOfertas(catalogo, null, TG_OFERTAS_MIN_TAMANHOS), cores: cores, pos: pos, nicho: {}, vocab: vocab };
   if (tgPreparoCache && catalogo && typeof catalogo === 'object') tgPreparoCache.set(catalogo, prep);
   return prep;
 }
@@ -396,6 +433,7 @@ function tgPontuar(qTokens, normQ, catalog, prep) {
     const item = catalog[i];
     const normN = normalizeText(item.n);
     const nTokens = normN.split(' ');
+    const nVirt = tgTokensVirtuais(nTokens);
     const normC = normalizeText(item.c);
 
     let tokenScore = 0;
@@ -425,6 +463,16 @@ function tgPontuar(qTokens, normQ, catalog, prep) {
           const d = levenshtein(qt, nt, maxD);
           if (d === 1) { maxPts = Math.max(maxPts, 7); matched = true; }
           else if (d === 2 && ql >= 5) { maxPts = Math.max(maxPts, 4); matched = true; }
+        }
+      }
+
+      // partes de tecido composto ("linho" e "viscose" em "viscolinho"): exato e prefixo sempre; erro de digitação só se a palavra não existe inteira no catálogo
+      for (let v = 0; v < nVirt.length; v++) {
+        const nt = nVirt[v];
+        if (nt === qt) { maxPts = Math.max(maxPts, 12); matched = true; }
+        else if (nt.startsWith(qt)) { maxPts = Math.max(maxPts, 8); matched = true; }
+        else if (tgTypoLivre(qt, prep)) {
+          if (levenshtein(qt, nt, 1) === 1) { maxPts = Math.max(maxPts, 7); matched = true; } // só 1 letra de diferença (nas partes de tecido não há a faixa de 2)
         }
       }
 
@@ -647,8 +695,249 @@ function tgBuscaCurada(busca, catalogo, prep, limite, aceitos) {
   return { id: busca.id, blocos: ativos, total: total, flat: flat, aplicado: aplicado };
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Esgotado nominal (REL-04, quick basico-producao de 17/11). Quando a cliente busca pelo NOME de uma peça que está com a grade esgotada, o motor
+// mostra a peça marcada "Grade esgotada" e, abaixo, peças parecidas (mesmo tipo) com grade cheia, incluindo o Best Seller do tipo.
+// O catálogo de esgotados (id, n, s, c, p, i) é carregado pelo injetor SÓ quando tgPrecisaEsgotados diz que vale a pena e chega aqui já validado como
+// 4º argumento de runSearch. Sem ele, nada muda. Regras (REL-03 e fail-closed):
+//   1. Só palavras "nominais" pedem esgotado: 4+ letras, não numéricas, que não estão na lista de palavras genéricas (tipo de peça, cor, tecido,
+//      detalhe) e que NÃO casam com nenhuma peça em estoque. "vestido", "preto", "alfaiataria" ou "blusa" nunca trazem esgotado (busca ampla).
+//   2. A palavra precisa aparecer em poucas peças esgotadas (TG_ESG_FREQ_MAX); palavra que aparece em muitas é genérica por natureza.
+//   3. Todas as palavras nominais da busca precisam casar com o MESMO nome esgotado. Sem casamento, o resultado é o de sempre.
+//   4. Busca com tamanho ("pantalona g") e busca curada (wedding) seguem o caminho de sempre.
+// "Categoria" dos similares = o tipo da peça, a primeira palavra do nome (Vestido, Calça, Blusa...). O campo c das esgotadas quase sempre é
+// "Sold out" (2.312 esgotadas em 17/11: 1.576 assim), então não serve para achar similares.
+// ---------------------------------------------------------------------------------------------------------------------
+var TG_ESG_MAX = 3;            // peças esgotadas mostradas no máximo
+var TG_ESG_SIMILARES = 3;      // similares mostrados no máximo (o Best Seller do tipo entra primeiro, se houver)
+var TG_ESG_MIN_TAMANHOS = 3;   // grade cheia = pelo menos 3 tamanhos em estoque
+var TG_ESG_FREQ_MAX = 30;      // palavra presente em mais peças esgotadas que isso é genérica demais para pedir esgotado
+var TG_ESG_PALAVRA_MIN = 4;    // palavra da busca com menos letras que isso nunca pede esgotado
+var TG_SELO_ESGOTADO = 'Grade esgotada';
+// Categorias de vitrine ou de sistema que não dizem o tipo da peça (não servem para "mesma categoria" nos similares).
+var TG_ESG_CATEGORIAS_IGNORADAS = ['sold out', 'outlet', 'novidades', 'novidade', 'ultimas oportunidades', 'best sellers', 'best seller', 'geral', 'queridinhos da cindy', 'kits com desconto'];
+var TG_ESG_PALAVRAS_VAZIAS = ['em', 'de', 'da', 'do', 'das', 'dos', 'com', 'sem', 'que', 'um', 'uma', 'e', 'a', 'o', 'para'];
+
+// Palavras que descrevem muitas peças e nunca identificam uma peça só (já normalizadas). O limite por frequência (TG_ESG_FREQ_MAX) cobre o que faltar.
+var TG_ESG_GENERICAS = (function () {
+  var lista = [
+    // tipo da peça
+    'vestido', 'vestidos', 'blusa', 'blusas', 'calca', 'calcas', 'corset', 'corsets', 'corselet', 'macacao', 'macacoes', 'macaquinho', 'macaquinhos',
+    'cropped', 'croppeds', 'saia', 'saias', 'camisa', 'camisas', 'colete', 'coletes', 'regata', 'regatas', 'blazer', 'blazers', 'jaqueta', 'jaquetas',
+    'casaco', 'casacos', 'lenco', 'lencos', 'kit', 'kits', 'body', 'short', 'shorts', 'bermuda', 'bermudas', 'conjunto', 'conjuntos', 'look', 'looks',
+    'top', 'tops', 'peca', 'pecas', 'roupa', 'roupas', 'moda', 'bata', 'cardigan', 'kimono', 'tricot', 'sobretudo', 'trench',
+    // cor e tom
+    'preto', 'preta', 'pretos', 'pretas', 'branco', 'branca', 'brancos', 'brancas', 'off', 'white', 'offwhite', 'azul', 'azuis', 'marinho', 'petroleo',
+    'celeste', 'claro', 'clara', 'claros', 'escuro', 'escura', 'vinho', 'verde', 'verdes', 'militar', 'floresta', 'agua', 'limao', 'oliva', 'musgo',
+    'esmeralda', 'menta', 'amarelo', 'amarela', 'amarelos', 'mostarda', 'canario', 'ouro', 'rosa', 'rosas', 'pink', 'bege', 'marrom', 'marrons',
+    'vermelho', 'vermelha', 'vermelhos', 'caramelo', 'areia', 'cinza', 'laranja', 'roxo', 'roxa', 'lilas', 'nude', 'dourado', 'dourada', 'prata',
+    'terracota', 'royal', 'turquesa', 'bebe', 'sol', 'estampado', 'estampada', 'listrado', 'listrada', 'floral', 'xadrez', 'colorido', 'colorida',
+    // tecido
+    'alfaiataria', 'alfaitaria', 'malha', 'crepe', 'tricoline', 'bengaline', 'viscolinho', 'viscose', 'linho', 'seda', 'cetim', 'veludo', 'jeans',
+    'laise', 'sarja', 'sarjada', 'jacquard', 'acetinada', 'acetinado', 'renda', 'tule', 'poa', 'moletom', 'ribana', 'jersey', 'couro', 'organza',
+    'chiffon', 'cotton', 'neoprene', 'suede', 'crepom', 'gabardine', 'cambraia',
+    // modelo e detalhe
+    'midi', 'mini', 'maxi', 'longo', 'longa', 'curto', 'curta', 'tomara', 'caia', 'ombro', 'ombros', 'decote', 'fenda', 'assimetrico', 'assimetrica',
+    'transpasse', 'manga', 'mangas', 'babados', 'ombreiras', 'lisa', 'liso', 'reta', 'reto', 'amarracao', 'alca', 'alcas', 'gola', 'botoes', 'bolso',
+    'bolsos', 'cinto', 'cintura', 'flare', 'skinny', 'cargo', 'jogger', 'wide', 'slim', 'tamanho', 'tamanhos', 'numero', 'novo', 'nova', 'novos', 'novas'
+  ], out = {}, i;
+  for (i = 0; i < lista.length; i++) out[lista[i]] = true;
+  return out;
+})();
+
+// Grau de casamento da palavra da busca (qt) com uma palavra de nome (nt): 3 igual, 2 prefixo (ou a busca é o plural da palavra do nome), 1 erro de
+// digitação, 0 nada. "folgado" usa a tolerância do motor de sempre (até 2 letras de diferença com 5+ letras) e serve para dizer que JÁ existe peça em estoque
+// parecida; sem "folgado" a tolerância é de 1 letra e só com 5+ letras (usado para achar a esgotada).
+function tgGrauEsg(qt, nt, folgado) {
+  var ql = qt.length, d;
+  if (nt === qt) return 3;
+  if (ql >= TG_ESG_PALAVRA_MIN && nt.indexOf(qt) === 0) return 2;
+  if (ql >= TG_ESG_PALAVRA_MIN && nt.length >= TG_ESG_PALAVRA_MIN && qt.indexOf(nt) === 0) return 2;
+  if (folgado) {
+    d = levenshtein(qt, nt, ql <= 4 ? 1 : 2);
+    if (d === 1 || (d === 2 && ql >= 5)) return 1;
+  } else if (ql >= 5) {
+    if (levenshtein(qt, nt, 1) === 1) return 1;
+  }
+  return 0;
+}
+
+// A palavra é uma palavra genérica, um pedaço dela (alfaiat) ou erro de digitação de 1 letra dela (vestdo)?
+function tgEhGenerica(t) {
+  var k;
+  if (TG_ESG_GENERICAS[t]) return true;
+  for (k in TG_ESG_GENERICAS) {
+    if (Object.prototype.hasOwnProperty.call(TG_ESG_GENERICAS, k) && tgGrauEsg(t, k, false) > 0) return true;
+  }
+  return false;
+}
+
+// Palavras da busca que podem pedir esgotado (ver regra 1).
+function tgNominaisDaConsulta(qTokens) {
+  var out = [], i, t;
+  for (i = 0; i < qTokens.length; i++) {
+    t = qTokens[i];
+    if (t.length < TG_ESG_PALAVRA_MIN || /^[0-9]+$/.test(t) || TG_CURADA_LIGACAO.indexOf(t) >= 0 || tgEhGenerica(t)) continue;
+    if (out.indexOf(t) < 0) out.push(t);
+  }
+  return out;
+}
+
+// Palavras (únicas) dos nomes das peças em estoque, com as partes de tecido. Uma vez por catálogo.
+function tgPalavrasEmEstoque(catalogo, prep) {
+  var vistos = {}, lista = [], i, it, tk, k, todos;
+  if (prep.palavrasEstoque) return prep.palavrasEstoque;
+  for (i = 0; i < catalogo.length; i++) {
+    it = catalogo[i];
+    if (!it || typeof it !== 'object' || !tgDisponivel(it)) continue;
+    tk = normalizeText(it.n).split(' ');
+    todos = tk.concat(tgTokensVirtuais(tk));
+    for (k = 0; k < todos.length; k++) { if (todos[k] && !vistos[todos[k]]) { vistos[todos[k]] = true; lista.push(todos[k]); } }
+  }
+  prep.palavrasEstoque = lista;
+  return lista;
+}
+
+// Das palavras nominais, as que NÃO têm peça em estoque com a mesma palavra (igual ou começo dela). Devolve { palavra: grau }, grau 0 = nada parecido
+// em estoque; grau 1 = só uma palavra parecida (erro de digitação: "mercia" e a "Marcia" em estoque), caso em que a esgotada só vale se casar melhor.
+function tgNominaisSemEstoque(nominais, catalogo, prep) {
+  var palavras = tgPalavrasEmEstoque(catalogo, prep), out = {}, i, k, g, melhor;
+  for (i = 0; i < nominais.length; i++) {
+    melhor = 0;
+    for (k = 0; k < palavras.length && melhor < 2; k++) { g = tgGrauEsg(nominais[i], palavras[k], true); if (g > melhor) melhor = g; }
+    if (melhor < 2) out[nominais[i]] = melhor;
+  }
+  return out;
+}
+
+// O injetor chama isto com o catálogo normal já carregado: vale a pena baixar o catálogo de esgotados para esta busca? (só texto e catálogo em estoque)
+function tgPrecisaEsgotados(query, catalogo) {
+  var q = normalizeText(query), qTokens, nominais;
+  if (!q || q.length < 2 || !catalogo || !catalogo.length) return false;
+  qTokens = q.split(' ').filter(Boolean);
+  if (tgTamanhoDaConsulta(qTokens) || tgCuradaDaConsulta(qTokens)) return false;
+  nominais = tgNominaisDaConsulta(qTokens);
+  if (!nominais.length) return false;
+  return Object.keys(tgNominaisSemEstoque(nominais, catalogo, tgPreparar(catalogo))).length > 0;
+}
+
+// Tipo da peça = primeira palavra do nome, no singular (Vestidos/Vestido, Shorts/Short).
+function tgTipoPeca(n) {
+  var t = normalizeText(n).split(' ')[0] || '';
+  if (t.length > 4 && t.charAt(t.length - 1) === 's') t = t.slice(0, -1);
+  return t;
+}
+
+// Índice dos esgotados (uma vez por lista): palavras de cada nome e tipo. Esgotada que tem o mesmo handle de uma peça do catálogo normal é ignorada
+// (peça que está no catálogo em estoque nunca pode aparecer como esgotada).
+var tgEsgIdxCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+
+function tgIndiceEsgotados(esgotados, catalogo) {
+  var idx, handles = {}, i, it, lista = [], tk;
+  if (tgEsgIdxCache) { idx = tgEsgIdxCache.get(esgotados); if (idx && idx.cat === catalogo) return idx; }
+  for (i = 0; i < catalogo.length; i++) { if (catalogo[i] && typeof catalogo[i].s === 'string') handles[catalogo[i].s] = true; }
+  for (i = 0; i < esgotados.length; i++) {
+    it = esgotados[i];
+    if (!it || typeof it !== 'object' || typeof it.n !== 'string' || handles[it.s]) continue;
+    tk = normalizeText(it.n).split(' ');
+    lista.push({ item: it, tokens: tk, tipo: tgTipoPeca(it.n), ordem: i });
+  }
+  idx = { cat: catalogo, lista: lista };
+  if (tgEsgIdxCache) tgEsgIdxCache.set(esgotados, idx);
+  return idx;
+}
+
+function tgMelhorGrau(qt, tokens) {
+  var g = 0, k;
+  for (k = 0; k < tokens.length && g < 3; k++) { g = Math.max(g, tgGrauEsg(qt, tokens[k], false)); }
+  return g;
+}
+
+// Peças parecidas em estoque com grade cheia para uma esgotada: mesmo tipo, depois palavras do nome em comum, mesma categoria real e faixa de preço.
+// O Best Seller do tipo (a 1ª do catálogo, que é a mais vendida, com t = 1) vem primeiro.
+function tgSimilaresEsgotada(esg, catalogo, prep) {
+  var tipo = esg.tipo, cand = [], melhor = null, ref, cEsg, pEsg, i, it, nm, comum, k, sc, out, usados;
+  if (!tipo) return { itens: [], melhor: null };
+  ref = esg.tokens.filter(function (t, n) { return n > 0 && TG_ESG_PALAVRAS_VAZIAS.indexOf(t) < 0; });
+  cEsg = normalizeText(esg.item.c);
+  if (TG_ESG_CATEGORIAS_IGNORADAS.indexOf(cEsg) >= 0) cEsg = '';
+  pEsg = esg.item.p;
+  for (i = 0; i < catalogo.length; i++) {
+    it = catalogo[i];
+    if (!it || typeof it !== 'object' || !tgDisponivel(it) || it.sz.length < TG_ESG_MIN_TAMANHOS || tgTipoPeca(it.n) !== tipo) continue;
+    nm = normalizeText(it.n).split(' ');
+    comum = 0;
+    for (k = 0; k < ref.length; k++) { if (nm.indexOf(ref[k]) >= 0) comum++; }
+    sc = comum * 3 + (cEsg && normalizeText(it.c) === cEsg ? 2 : 0) + (typeof pEsg === 'number' && pEsg > 0 && Math.abs(it.p - pEsg) / pEsg <= 0.25 ? 1 : 0);
+    cand.push({ item: it, sc: sc, pos: i });
+    if (!melhor && it.t === 1) melhor = it;
+  }
+  cand.sort(function (a, b) { return (b.sc - a.sc) || (a.pos - b.pos); });
+  out = melhor ? [melhor] : [];
+  usados = melhor ? 1 : 0;
+  for (i = 0; i < cand.length && usados < TG_ESG_SIMILARES; i++) {
+    if (cand[i].item === melhor) continue;
+    out.push(cand[i].item);
+    usados++;
+  }
+  return { itens: out, melhor: melhor };
+}
+
+// Resultado de esgotado nominal ou null. Devolve o mesmo formato do runSearch, mais { esgotado: { itens, similares, melhor, tipo, nominais } }.
+function tgBuscaEsgotado(qTokens, catalogo, prep, esgotados, limite) {
+  var nominais = tgNominaisDaConsulta(qTokens), semEstoque, pedem, idx, cand, i, qt, minGrau, todos, n, rank, itens, sim, nEsg, nSim, res, selos, k;
+  if (!nominais.length) return null;
+  semEstoque = tgNominaisSemEstoque(nominais, catalogo, prep);
+  pedem = Object.keys(semEstoque);
+  if (!pedem.length) return null;
+  idx = tgIndiceEsgotados(esgotados, catalogo);
+  cand = idx.lista;
+  function casa(minimo, qtx) { return function (e) { return tgMelhorGrau(qtx, e.tokens) >= minimo; }; }
+  for (i = 0; i < nominais.length; i++) {
+    qt = nominais[i];
+    if (Object.prototype.hasOwnProperty.call(semEstoque, qt)) {
+      // sem peça em estoque com a palavra (grau 0) a esgotada pode casar até com 1 letra de erro; se só há uma parecida em estoque (grau 1, "Marcia"),
+      // a esgotada precisa casar melhor (igual ou começo da palavra, "Mércia")
+      minGrau = semEstoque[qt] === 0 ? 1 : 2;
+      todos = cand.filter(casa(minGrau, qt));
+      if (!todos.length) return null; // nenhuma esgotada tem a palavra junto com as outras: segue a busca de sempre
+      n = idx.lista.filter(casa(minGrau, qt)).length;
+      if (n > TG_ESG_FREQ_MAX) { delete semEstoque[qt]; continue; } // genérica demais para identificar uma peça: não pede esgotado
+      cand = todos;
+    } else {
+      todos = cand.filter(casa(1, qt));
+      n = idx.lista.filter(casa(1, qt)).length;
+      if (todos.length && n <= TG_ESG_FREQ_MAX) cand = todos; // existe em estoque e também identifica a esgotada: estreita
+    }
+  }
+  if (!Object.keys(semEstoque).length || !cand.length) return null;
+  rank = cand.map(function (e) {
+    var s = 0, j;
+    for (j = 0; j < qTokens.length; j++) { if (qTokens[j].length >= 3) s += tgMelhorGrau(qTokens[j], e.tokens); }
+    return { e: e, s: s };
+  });
+  rank.sort(function (a, b) { return (b.s - a.s) || (a.e.ordem - b.e.ordem); });
+  nEsg = Math.min(rank.length, TG_ESG_MAX, Math.max(1, limite - 3));
+  itens = rank.slice(0, nEsg).map(function (r) { return r.e.item; });
+  sim = tgSimilaresEsgotada(rank[0].e, catalogo, prep);
+  nSim = Math.max(0, Math.min(sim.itens.length, TG_ESG_SIMILARES, limite - nEsg));
+  sim = { itens: sim.itens.slice(0, nSim), melhor: sim.itens.slice(0, nSim).indexOf(sim.melhor) >= 0 ? sim.melhor : null };
+  selos = new Map();
+  for (k = 0; k < itens.length; k++) selos.set(itens[k], { tipo: 'esgotado', texto: TG_SELO_ESGOTADO });
+  for (k = 0; k < sim.itens.length; k++) {
+    if (sim.itens[k] === sim.melhor) selos.set(sim.itens[k], { tipo: 'best', texto: TG_SELO_BEST });
+    else if (prep.ofertas.get(sim.itens[k])) selos.set(sim.itens[k], prep.ofertas.get(sim.itens[k]));
+  }
+  res = {
+    results: itens.concat(sim.itens), suggestedTerm: null, selos: selos, tamanho: null,
+    esgotado: { itens: itens, similares: sim.itens, melhor: sim.melhor, tipo: rank[0].e.tipo, nominais: Object.keys(semEstoque) }
+  };
+  return res;
+}
+
 // 2. Ranqueamento e Busca em Memória
-function runSearch(query, catalog, limit) {
+// "esgotados" (opcional): lista do catálogo de esgotados já validada. Só o injetor a passa, e só depois de tgPrecisaEsgotados.
+function runSearch(query, catalog, limit, esgotados) {
   limit = limit || 6;
   let normQ = normalizeText(query);
   const prep = tgPreparar(catalog);
@@ -685,6 +974,12 @@ function runSearch(query, catalog, limit) {
         curada: { id: cur.id, blocos: cur.blocos, total: cur.total }
       };
     }
+  }
+
+  // Esgotado nominal: só com o catálogo de esgotados já validado, sem tamanho na busca e quando a palavra pedida não casa com nenhuma peça em estoque.
+  if (esgotados && esgotados.length && !tam && qTokens.length) {
+    const esg = tgBuscaEsgotado(qTokens, catalog, prep, esgotados, limit);
+    if (esg) { esg.query = query; return esg; }
   }
 
   let scored;
@@ -837,7 +1132,7 @@ function blocoPreco(item) {
  * nunca o texto digitado nem a URL.
  */
 var TG_GA4 = 'G-QK83GW3WCR';
-var TG_PARAMS = ['engine_version', 'engine_mode', 'page_type', 'position', 'query_len', 'had_correction', 'results_count', 'rescue_type', 'reason'];
+var TG_PARAMS = ['engine_version', 'engine_mode', 'engine_group', 'page_type', 'position', 'query_len', 'had_correction', 'results_count', 'rescue_type', 'reason'];
 var tgFilaC = [], tgTimerC = 0;
 
 // Fila do Clarity: tenta a cada 250 ms por ate cerca de 10 s e nunca cria window.clarity.
@@ -872,6 +1167,8 @@ function emitir(nome, params) {
         if (v !== undefined) { ev[k] = v; }
       }
     }
+    // Teste A/B (pacote D): todo evento tg_busca_* leva o grupo da visitante ('novo'), vindo do contexto do carregador. Sem grupo (modos preview/on), nada.
+    if (typeof tgCtx !== 'undefined' && tgCtx && tgCtx.grupo === 'novo') { ev.engine_group = 'novo'; }
     try {
       if (window.dataLayer && typeof window.dataLayer.push === 'function') {
         var d = { event: nome }; for (k in ev) { d[k] = ev[k]; }
@@ -939,9 +1236,33 @@ function validarCatalogo(dados, bytes) {
   return out.length >= TG_CAT_MIN ? out : null;
 }
 
+// Catalogo de esgotados (REL-04): mesmas regras do catalogo normal (formato de cada item, minimo de itens, 2 MB, falha fechada), mas o que sai daqui
+// NUNCA tem tamanho em estoque: de cada item so ficam id, n, s, c, p e i, marcados com so = 1. Se o arquivo trouxer sz, pp, t, b ou g, e ignorado,
+// entao nada que venha desse arquivo pode aparecer como peca em estoque.
+function validarEsgotados(dados, bytes) {
+  var base = validarCatalogo(dados, bytes), out = [], i, x, o;
+  if (!base) { return null; }
+  for (i = 0; i < base.length; i++) {
+    x = base[i];
+    o = { id: x.id, n: x.n, s: x.s, c: x.c, p: x.p, so: 1 };
+    if (typeof x.i === 'string') { o.i = x.i; }
+    out.push(o);
+  }
+  return out;
+}
+
+// Endereco do catalogo de esgotados, a partir do endereco do catalogo normal (mesma pasta, outro arquivo). Qualquer outro formato = sem esgotados.
+var TG_ESG_ARQUIVO = /\/search_catalog\.min\.json$/;
+function urlEsgotados(urlCatalogo) {
+  if (typeof urlCatalogo !== 'string' || !TG_ESG_ARQUIVO.test(urlCatalogo)) { return null; }
+  return urlCatalogo.replace(TG_ESG_ARQUIVO, '/search_catalog_soldout.min.json');
+}
+
 // Nunca lanca. Devolve { itens } ou { motivo }: cat_rede, cat_timeout, cat_http, cat_json, cat_formato, cat_poucos.
-function carregarCatalogo(url, timeoutMs) {
+// "validar" (opcional): quem valida e limpa a lista (padrao: validarCatalogo; os esgotados usam validarEsgotados).
+function carregarCatalogo(url, timeoutMs, validar) {
   var ctl, tm, esgotou = false;
+  validar = validar || validarCatalogo;
   function fim(r) { clearTimeout(tm); return r; }
   try {
     if (typeof fetch !== 'function' || typeof AbortController !== 'function') { return Promise.resolve({ motivo: 'cat_rede' }); }
@@ -958,7 +1279,7 @@ function carregarCatalogo(url, timeoutMs) {
         try { dados = JSON.parse(txt); } catch (e) { return fim({ motivo: 'cat_json' }); }
         if (!Array.isArray(dados)) { return fim({ motivo: 'cat_formato' }); }
         if (dados.length < TG_CAT_MIN) { return fim({ motivo: 'cat_poucos' }); }
-        itens = validarCatalogo(dados, txt.length);
+        itens = validar(dados, txt.length);
         return fim(itens ? { itens: itens } : { motivo: 'cat_poucos' });
       });
     })['catch'](function () {
@@ -995,6 +1316,8 @@ var TG_CSS = [
   '.tg-busca-selo-campeao{background:#ecfdf5;color:#065f46}',
   '.tg-busca-selo-ultimas{background:#fffbeb;color:#92400e}',
   '.tg-busca-selo-oferta{background:#fef2f2;color:#991b1b}',
+  '.tg-busca-selo-esgotado{background:#f1f3f5;color:#495057}',
+  '.tg-busca-item-esgotado .tg-busca-thumb,.tg-busca-card-esgotado .tg-busca-thumb{filter:grayscale(1);opacity:.6}',
   '.tg-busca-pilulas{display:flex;gap:4px;flex-wrap:wrap}',
   '.tg-busca-pilula{font-size:10px;padding:1px 5px;background:#f1f3f5;color:#495057;border-radius:3px;font-weight:500}',
   '.tg-busca-pilula-pedida{background:#222;color:#fff;font-weight:700}',
@@ -1045,16 +1368,17 @@ function tgAcSelo(p, info) {
   if (!info) { info = p.t === 1 ? { tipo: 'best', texto: TG_SELO_BEST } : (p.t === 4 ? { tipo: 'ultimas', texto: TG_SELO_ULTIMAS } : null); }
   if (!info) { return null; }
   // a classe -campeao segue como estava (so o texto virou Best Seller)
-  return el('span', { 'class': 'tg-busca-selo tg-busca-selo-' + (info.tipo === 'oferta' ? 'oferta' : (info.tipo === 'best' ? 'campeao' : 'ultimas')) }, [info.texto]);
+  return el('span', { 'class': 'tg-busca-selo tg-busca-selo-' + (info.tipo === 'oferta' ? 'oferta' : (info.tipo === 'best' ? 'campeao' : (info.tipo === 'esgotado' ? 'esgotado' : 'ultimas'))) }, [info.texto]);
 }
 
 // Uma linha da lista. Devolve null se o item nao tem link ou preco validos (nao aparece).
-// "extra" (opcional): { curada: true } marca a busca curada na telemetria (rescue_type = 'curada'); { tamanhos: [...] } destaca a pilula do tamanho pedido.
+// "extra" (opcional): { curada: true } marca a busca curada na telemetria (rescue_type = 'curada'); { esgotado: true } marca o esgotado nominal
+// (rescue_type = 'esgotado'; a peca sem tamanho em estoque ganha a classe tg-busca-item-esgotado); { tamanhos: [...] } destaca a pilula do tamanho pedido.
 function tgAcLinha(p, posicao, consulta, corrigiu, info, extra) {
-  var href = urlProduto(p.s), preco = blocoPreco(p), selo, a, curada = !!(extra && extra.curada);
+  var href = urlProduto(p.s), preco = blocoPreco(p), selo, a, curada = !!(extra && extra.curada), esgotado = !!(extra && extra.esgotado), soldout = esgotado && !tgDisponivel(p);
   if (!href || !preco) { return null; }
   selo = tgAcSelo(p, info);
-  a = el('a', { 'class': 'tg-busca-item', href: href }, [
+  a = el('a', { 'class': soldout ? 'tg-busca-item tg-busca-item-esgotado' : 'tg-busca-item', href: href }, [
     foto(p, 'tg-busca-thumb'),
     el('div', { 'class': 'tg-busca-info' }, [
       el('div', { 'class': 'tg-busca-nome' }, [p.n]),
@@ -1065,6 +1389,7 @@ function tgAcLinha(p, posicao, consulta, corrigiu, info, extra) {
   a.addEventListener('click', function () {
     var ev = { position: posicao, query_len: consulta.length, had_correction: corrigiu ? 'sim' : 'nao', engine_version: tgCtx.versao };
     if (curada) { ev.rescue_type = 'curada'; }
+    if (esgotado) { ev.rescue_type = 'esgotado'; }
     try { emitir('tg_busca_sugestao_click', ev); } catch (e) {}
   });
   return el('li', null, [a]);
@@ -1084,10 +1409,40 @@ function tgBlocoTitulo(titulo, total, tag) {
   return el(tag || 'div', { 'class': 'tg-busca-bloco-titulo' }, [el('span', null, [titulo]), el('span', { 'class': 'tg-busca-bloco-qtd' }, [total + (total === 1 ? ' peça' : ' peças')])]);
 }
 
+// Esgotado nominal (REL-04): a(s) peca(s) esgotada(s) marcada(s) "Grade esgotada" e, abaixo, as parecidas com grade cheia (o Best Seller do tipo primeiro).
+// Mesmos cuidados do resto: so texto, link normal para a PDP, "Ver todos" para a busca da pagina com o que foi digitado.
+function tgAcPintarEsgotado(caixa, consulta, res) {
+  var e = res.esgotado, extra = { esgotado: true }, grupos = [[e.itens.length === 1 ? 'Peça esgotada' : 'Peças esgotadas', e.itens], ['Opções parecidas com grade completa', e.similares]];
+  var blocos = [], n = 0, g, i, li, lis, todos, total;
+  for (g = 0; g < grupos.length; g++) {
+    lis = [];
+    for (i = 0; i < grupos[g][1].length; i++) {
+      li = tgAcLinha(grupos[g][1][i], n + 1, consulta, false, res.selos ? (res.selos.get(grupos[g][1][i]) || false) : false, extra);
+      if (li) { n++; lis.push(li); }
+    }
+    if (lis.length) { blocos.push(el('div', { 'class': 'tg-busca-bloco' }, [tgBlocoTitulo(grupos[g][0], lis.length), el('ul', { 'class': 'tg-busca-lista' }, lis)])); }
+  }
+  if (!n) {
+    caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Não encontramos resultados para "', el('strong', null, [consulta]), '".']));
+    caixa.classList.remove('tg-busca-oculto');
+    return;
+  }
+  caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Grade esgotada para ', el('strong', null, [consulta]), '. Veja opções parecidas com grade completa.']));
+  for (i = 0; i < blocos.length; i++) { caixa.appendChild(blocos[i]); }
+  total = n;
+  todos = el('a', { 'class': 'tg-busca-todos', href: urlBusca(consulta) }, ['Ver todos os resultados (' + total + ')']);
+  todos.addEventListener('click', function () {
+    try { emitir('tg_busca_ver_todos', { query_len: consulta.length, results_count: total, rescue_type: 'esgotado' }); } catch (err) {}
+  });
+  caixa.appendChild(todos);
+  caixa.classList.remove('tg-busca-oculto');
+}
+
 function tgAcPintar(pegarCaixa, input, consulta, res) {
   var linhas = [], blocos = [], i, b, li, lis, ul, todos, sugerido, botao, caixa = pegarCaixa(), extra, total, termoTodos;
   if (!caixa) { return; }
   tgAcLimpar(caixa);
+  if (res.esgotado) { tgAcPintarEsgotado(caixa, consulta, res); return; }
   extra = { curada: !!res.curada, tamanhos: res.tamanho && res.tamanho.aplicado ? res.tamanho.aceitos : null };
   if (res.curada) {
     // busca curada: um bloco por titulo, na ordem do motor (as pecas ja vem na ordem de cada bloco)
@@ -1151,6 +1506,14 @@ function tgAcDesenhar(pegarCaixa, input, consulta) {
   }
   obterCatalogo().then(function (cat) {
     if (!cat || input.value.trim() !== consulta) { return; }
+    // Esgotado nominal: so quando a palavra pedida nao casa com nenhuma peca em estoque (tgPrecisaEsgotados). O catalogo de esgotados e baixado
+    // uma vez, sob demanda; se falhar (ou demorar mais que o limite), a busca de sempre aparece, sem nenhum aviso.
+    if (tgPrecisaEsgotados(consulta, cat)) {
+      return obterEsgotados().then(function (esg) {
+        if (input.value.trim() !== consulta) { return; }
+        tgAcPintar(pegarCaixa, input, consulta, runSearch(consulta, cat, TG_AC_LIMITE, esg));
+      });
+    }
     tgAcPintar(pegarCaixa, input, consulta, runSearch(consulta, cat, TG_AC_LIMITE));
   })['catch'](function () {});
 }
@@ -1199,6 +1562,7 @@ function ligarAutocomplete() {
  * O termo da URL entra so como texto. Nesta fase nao esconde nada da pagina nativa (L19 e L12 ficam para a Fase 3) e nao tem linha de Pix (DP5).
  */
 var TG_RG_LIMITE = 4;
+var TG_RG_ESG_LIMITE = 6; // esgotado nominal: ate 3 esgotadas + 3 parecidas
 
 // "info" (opcional): o selo do motor para a peca (so a pagina curada passa; o resgate segue sem selo). "tamanhos" (opcional): destaca a pilula pedida.
 function tgRgCard(p, info, tamanhos) {
@@ -1248,8 +1612,45 @@ function tgCuMontar(res) {
   return true;
 }
 
-function tgRgMontar(q, cat) {
-  var res = runSearch(q, cat, TG_RG_LIMITE), cards = [], i, c, desc, tipo, destino, caixa;
+// Esgotado nominal na pagina /search sem resultado nativo (REL-04): a(s) peca(s) com a tarja "Grade esgotada" e, em outra secao, as parecidas com
+// grade cheia (o Best Seller do tipo primeiro). So texto; o link das cartas e o da PDP de sempre. Devolve true se montou.
+function tgRgMontarEsgotado(q, res) {
+  var e = res.esgotado, secoes = [], total = 0, grupos = [[e.itens.length === 1 ? 'Peça esgotada' : 'Peças esgotadas', e.itens], ['Opções parecidas com grade completa', e.similares]];
+  var g, i, c, cards, destino, caixa;
+  for (g = 0; g < grupos.length; g++) {
+    cards = [];
+    for (i = 0; i < grupos[g][1].length; i++) {
+      c = tgRgCard(grupos[g][1][i], res.selos ? (res.selos.get(grupos[g][1][i]) || false) : false);
+      if (c) {
+        if (g === 0) { c.setAttribute('class', 'tg-busca-card tg-busca-card-esgotado'); }
+        cards.push(c);
+      }
+    }
+    if (cards.length) {
+      total += cards.length;
+      secoes.push(el('section', { 'class': 'tg-busca-bloco', 'data-bloco': g === 0 ? 'esgotada' : 'similares' }, [tgBlocoTitulo(grupos[g][0], cards.length, 'h2'), el('div', { 'class': 'tg-busca-grade' }, cards)]));
+    }
+  }
+  if (!total) { return false; }
+  caixa = el('div', { id: 'tg-busca-resgate', 'class': 'tg-busca-zero container' }, [
+    el('div', { 'class': 'tg-busca-zero-titulo' }, ['Grade esgotada para "' + q + '"']),
+    el('div', { 'class': 'tg-busca-zero-desc' }, ['Veja a peça e, abaixo, opções parecidas com grade completa para envio imediato:'])
+  ].concat(secoes));
+  destino = document.querySelector('.category-body') || document.querySelector('main') || document.body;
+  if (!destino) { return false; }
+  injetarEstilos();
+  destino.insertBefore(caixa, destino.firstChild || null);
+  emitir('tg_busca_resgate_view', { rescue_type: 'esgotado', results_count: total });
+  return true;
+}
+
+function tgRgMontar(q, cat, esg) {
+  var res, cards = [], i, c, desc, tipo, destino, caixa;
+  if (esg) {
+    res = runSearch(q, cat, TG_RG_ESG_LIMITE, esg);
+    if (res.esgotado && tgRgMontarEsgotado(q, res)) { return; }
+  }
+  res = runSearch(q, cat, TG_RG_LIMITE);
   for (i = 0; i < res.results.length; i++) {
     c = tgRgCard(res.results[i]);
     if (c) { cards.push(c); }
@@ -1290,7 +1691,14 @@ function ligarResgate() {
       if (res.curada && tgCuMontar(res)) { return; }
     }
     if (document.querySelector('.js-product-table') || document.getElementById('tg-busca-resgate')) { return; }
-    tgRgMontar(q, cat);
+    // esgotado nominal: baixa o catalogo de esgotados so se a palavra pedida nao casa com nenhuma peca em estoque; falha = resgate de sempre
+    if (tgPrecisaEsgotados(q, cat)) {
+      return obterEsgotados().then(function (esg) {
+        if (document.querySelector('.js-product-table') || document.getElementById('tg-busca-resgate')) { return; }
+        tgRgMontar(q, cat, esg);
+      });
+    }
+    tgRgMontar(q, cat, null);
   })['catch'](function () {});
 }
 
@@ -1322,7 +1730,8 @@ function ctxValido(c) {
     typeof c.versao === 'string' && /^[0-9a-f]{7}$/.test(c.versao) &&
     (c.modo === 'preview' || c.modo === 'on') &&
     typeof c.catalogo === 'string' && TG_CAT_PREFIXO.test(c.catalogo) &&
-    (f == null || (typeof f === 'object' && !Array.isArray(f)));
+    (f == null || (typeof f === 'object' && !Array.isArray(f))) &&
+    (c.grupo == null || c.grupo === 'novo');
 }
 
 // Catalogo: uma tentativa por pagina, so quando alguem precisa. Falha fechada: devolve null e avisa a medicao uma vez.
@@ -1338,6 +1747,23 @@ function obterCatalogo() {
   return tgCatPromessa;
 }
 
+// Catalogo de esgotados (REL-04): uma tentativa por pagina, so quando a busca pede (tgPrecisaEsgotados) e so depois do catalogo normal. Falha fechada e
+// em silencio: sem endereco, rede fora, tempo esgotado, 404, JSON ou formato invalido = null, a busca segue como sempre e NAO emite tg_busca_off
+// (o motor continua ligado; so a camada de esgotado fica de fora). Nao guarda nada em global nem no armazenamento da sessao.
+var tgEsgPromessa = null;
+function obterEsgotados() {
+  var url;
+  if (!tgEsgPromessa) {
+    url = tgCtx ? urlEsgotados(tgCtx.catalogo) : null;
+    tgEsgPromessa = url ? carregarCatalogo(url, TG_CAT_TIMEOUT_MS, validarEsgotados).then(function (r) {
+      if (r.itens) { return r.itens; }
+      dbg('esgotados indisponiveis', r.motivo);
+      return null;
+    })['catch'](function () { return null; }) : Promise.resolve(null);
+  }
+  return tgEsgPromessa;
+}
+
 function iniciarBusca() {
   var c, f, largura, a, r;
   try {
@@ -1345,7 +1771,7 @@ function iniciarBusca() {
     c = window.TG_BUSCA_CTX;
     if (!ctxValido(c)) { return; }
     f = c.features || {};
-    tgCtx = { versao: c.versao, modo: c.modo, catalogo: c.catalogo, features: f };
+    tgCtx = { versao: c.versao, modo: c.modo, catalogo: c.catalogo, features: f, grupo: c.grupo === 'novo' ? 'novo' : null };
     largura = window.innerWidth || 0;
     if (f.desktop === false && largura >= 768) { return; }
     tgIniciado = true;

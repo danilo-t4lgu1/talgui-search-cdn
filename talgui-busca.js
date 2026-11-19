@@ -1332,7 +1332,7 @@ function tgFamiliaCor(item) {
   if (!cor) return null;
   n = tgPalavrasCor(cor).join(' ');
   for (i = 0; i < TG_COR_GRUPOS.length; i++) {
-    if (TG_COR_GRUPOS[i].v.indexOf(n) >= 0) { rotulo = TG_COR_GRUPOS[i].g; return { chave: TG_COR_GRUPOS[i].g, rotulo: rotulo.charAt(0).toUpperCase() + rotulo.slice(1) }; }
+    if (TG_COR_GRUPOS[i].v.indexOf(n) >= 0) { rotulo = TG_COR_GRUPOS[i].g === 'branco' ? 'off-white' : TG_COR_GRUPOS[i].g; return { chave: TG_COR_GRUPOS[i].g, rotulo: rotulo === 'off-white' ? 'Off-White' : rotulo.charAt(0).toUpperCase() + rotulo.slice(1) }; }
   }
   return { chave: n, rotulo: cor };
 }
@@ -1355,20 +1355,25 @@ function tgFiltrar(lista, opcoes) {
     c = Array.isArray(o.categoria) ? o.categoria : [o.categoria];
     for (i = 0; i < c.length; i++) { if (normalizeText(c[i])) cats[normalizeText(c[i])] = true; }
   }
-  return itens.filter(function (it) {
+  itens = itens.filter(function (it) {
     if (!it || typeof it !== 'object') return false;
     if (set && !tgTemTamanho(it, set)) return false;
     if (cores) { f = tgFamiliaCor(it); if (!f || !cores[f.chave]) return false; }
     if (cats && !cats[normalizeText(it.c)]) return false;
     return true;
   });
+  // Branco = Off-White: no filtro de cor, quem e Off White vem antes do Branco antigo (a ordem de cada grupo se mantem)
+  if (cores && cores.branco) {
+    itens = itens.filter(function (it) { return tgEhOffWhite(it); }).concat(itens.filter(function (it) { return !tgEhOffWhite(it); }));
+  }
+  return itens;
 }
+function tgEhOffWhite(it) { return tgPalavrasCor(tgModeloCor(it && it.n).cor || '').join(' ') === 'off white'; }
 
 var TG_CHIPS_EM_ALTA = [
   { rotulo: 'Vestidos', consulta: 'vestido' },
   { rotulo: 'Blusas', consulta: 'blusa' },
   { rotulo: 'Calças', consulta: 'calça' },
-  { rotulo: 'Conjuntos', consulta: 'conjunto' },
   { rotulo: 'Novidades', href: '/novidades/', novidades: true }
 ];
 // Chips de ocasiao (ao lado dos de categoria, so na pagina de resultados). A busca casa pelo nome da peca; a marcacao por tags (Wedding etc.) ainda nao existe.
@@ -1376,8 +1381,24 @@ var TG_CHIPS_OCASIAO = [
   { rotulo: 'Casual', consulta: 'casual' },
   { rotulo: 'Eventos', consulta: 'festa' },
   { rotulo: 'Office', consulta: 'office' },
-  { rotulo: 'Wedding', consulta: 'wedding' }
+  { rotulo: 'Wedding', consulta: 'regra:wedding' },
+  { rotulo: 'Madrinhas/Convidadas', consulta: 'regra:madrinhas' }
 ];
+// Selecao dos chips Wedding e Madrinhas/Convidadas (Danilo, 19/11): so vestidos com estoque.
+// Wedding = vestidos Off-White (a familia de cor branco inclui o Branco antigo); Madrinhas/Convidadas = todos os outros vestidos. Enquanto nao ha tag no catalogo, vale esta regra.
+function tgSelecaoVestidos(catalog, tipo) {
+  var out = [], i, it, f, branco;
+  if (!Array.isArray(catalog)) return out;
+  for (i = 0; i < catalog.length; i++) {
+    it = catalog[i];
+    if (!it || typeof it.n !== 'string' || !tgDisponivel(it)) continue;
+    if (normalizeText(it.n).split(' ')[0] !== 'vestido') continue;
+    f = tgFamiliaCor(it);
+    branco = !!(f && f.chave === 'branco');
+    if (tipo === 'wedding' ? branco : !branco) out.push(it);
+  }
+  return tgOrdenar(out, 'best-sellers');
+}
 // Categoria "Novidades da Semana" (a ordem dela vale para Lancamentos e para o chip Novidades).
 var TG_NOVIDADES_URL = '/novidades/novidades-da-semana/';
 
@@ -1885,6 +1906,7 @@ var TG_CSS_PAGINA = [
   '.tg-busca-togg-1 .tg-busca-togg-q{width:14px}',
   '.tg-busca-chips-linha{flex-wrap:nowrap;overflow-x:auto;margin:0 0 18px;padding:2px 0 4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}',
   '.tg-busca-chips-linha::-webkit-scrollbar{display:none}',
+  '.tg-busca-copiar{margin:0 0 14px;font-size:12px;border-style:dashed}',
   '.tg-busca-mais{display:block;min-width:230px;height:var(--tgb-botao-altura);margin:30px auto 0;padding:0 24px;border:1px solid var(--tgb-cor-texto);border-radius:var(--tgb-botao-raio);background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto);font-size:var(--tgb-botao-fonte);font-weight:var(--tgb-botao-peso);letter-spacing:var(--tgb-botao-espaco);text-transform:var(--tgb-botao-transformacao);cursor:pointer}',
   // pagina de busca curada (blocos) e estado sem resultado
   '.tg-busca-curada{max-width:1400px;margin:20px auto;padding:0 var(--tgb-pad-pagina)}',
@@ -3652,7 +3674,9 @@ function tgPgMontar(q, cat, res) {
     if (bases[est.base]) { return bases[est.base]; }
     lista = [];
     try {
-      r = runSearch(est.base, cat, TG_PG_LIMITE);
+      if (est.base === 'regra:wedding' || est.base === 'regra:madrinhas') {
+        r = { results: typeof tgSelecaoVestidos === 'function' ? tgSelecaoVestidos(cat, est.base === 'regra:wedding' ? 'wedding' : 'madrinhas') : [] };
+      } else { r = runSearch(est.base, cat, TG_PG_LIMITE); }
       for (j = 0; j < r.results.length; j++) { if (urlProduto(r.results[j].s) && precoFinal(r.results[j])) { lista.push(r.results[j]); } }
     } catch (e) {}
     bases[est.base] = lista;
@@ -3663,6 +3687,16 @@ function tgPgMontar(q, cat, res) {
     if (!est.novidades || !est.handles || !est.handles.length) { return lista; }
     for (j = 0; j < est.handles.length; j++) { set[est.handles[j]] = true; }
     for (j = 0; j < lista.length; j++) { if (set[lista[j].s]) { out.push(lista[j]); } }
+    return out;
+  }
+  // cores oferecidas: so as que existem no que a cliente ja filtrou (tamanho, categoria, novidades); as ja marcadas ficam sempre
+  function opcoesCor() {
+    var todas = tgPgOpcoesCor(baseItens()), vivas = tgPgOpcoesCor(tgPgFiltrar(soNovidades(baseItens()), est.tamanhos, [])), out = [], j, k, achou;
+    for (j = 0; j < todas.length; j++) {
+      achou = est.cores.indexOf(todas[j].valor) >= 0;
+      for (k = 0; !achou && k < vivas.length; k++) { if (vivas[k].valor === todas[j].valor) { achou = true; } }
+      if (achou) { out.push(todas[j]); }
+    }
     return out;
   }
   function lista() { return tgPgOrdenar(tgPgFiltrar(soNovidades(baseItens()), est.tamanhos, est.cores), est.ordem, est.handles); }
@@ -3692,15 +3726,62 @@ function tgPgMontar(q, cat, res) {
       vazio.classList.remove('tg-busca-oculto');
     } else { vazio.classList.add('tg-busca-oculto'); }
     chips();
+    if (ordem) { ordem.pintar(null, est.ordem); }
     if (tam) { tgTexto(tam.botao, rotuloContado('Tamanho', est.tamanhos.length)); tam.pintar(null, est.tamanhos); }
     if (cor) {
-      opCor = tgPgOpcoesCor(baseItens());
-      est.cores = est.cores.filter(function (c) { return opCor.some(function (o) { return o.valor === c; }); });
+      est.cores = est.cores.filter(function (c) { return tgPgOpcoesCor(baseItens()).some(function (o) { return o.valor === c; }); });
+      opCor = opcoesCor();
       tgTexto(cor.botao, rotuloContado('Cor', est.cores.length)); cor.pintar(opCor, est.cores);
     }
+    urlGravar();
   }
-  var limpar;
-  function limparTudo() { est.tamanhos = []; est.cores = []; est.base = ''; est.novidades = false; desenhar(); }
+  // ---- link compartilhavel: a combinacao de filtros vai na URL (tg_cat, tg_tam, tg_cor, tg_ord, tg_nov) e quem abrir o link ve a mesma busca
+  function tgPgConsultasValidas() {
+    var out = [], l = [], j, k;
+    if (typeof TG_CHIPS_EM_ALTA !== 'undefined' && Array.isArray(TG_CHIPS_EM_ALTA)) { l = l.concat(TG_CHIPS_EM_ALTA); }
+    if (typeof TG_CHIPS_OCASIAO !== 'undefined' && Array.isArray(TG_CHIPS_OCASIAO)) { l = l.concat(TG_CHIPS_OCASIAO); }
+    for (j = 0; j < l.length; j++) { if (l[j] && typeof l[j].consulta === 'string') { out.push(l[j].consulta); } }
+    return out;
+  }
+  function urlGravar() {
+    var sp, qs, ks = ['tg_cat', 'tg_tam', 'tg_cor', 'tg_ord', 'tg_nov'], vs, j;
+    try {
+      sp = new URLSearchParams(window.location.search);
+      vs = [est.base || '', est.tamanhos.join(','), est.cores.join(','), est.ordem !== 'relevancia' ? est.ordem : '', est.novidades ? '1' : ''];
+      for (j = 0; j < ks.length; j++) { if (vs[j]) { sp.set(ks[j], vs[j]); } else { sp['delete'](ks[j]); } }
+      qs = sp.toString().replace(/%2C/gi, ',');
+      window.history.replaceState(window.history.state, '', window.location.pathname + (qs ? '?' + qs : '') + (window.location.hash || ''));
+    } catch (e) {}
+    try { if (copiar) { if (est.base || est.tamanhos.length || est.cores.length || est.ordem !== 'relevancia' || est.novidades) { copiar.classList.remove('tg-busca-oculto'); } else { copiar.classList.add('tg-busca-oculto'); } } } catch (e) {}
+  }
+  function urlLer() {
+    var sp, v, partes, j, k, ids, validas, precisaNov = false;
+    try {
+      sp = new URLSearchParams(window.location.search);
+      v = sp.get('tg_ord');
+      if (v) { for (j = 0; j < TG_PG_ORDENS.length; j++) { if (TG_PG_ORDENS[j][0] === v) { est.ordem = v; } } }
+      v = sp.get('tg_cat');
+      if (v && tgPgConsultasValidas().indexOf(v) >= 0) { est.base = v; }
+      v = sp.get('tg_tam');
+      if (v) {
+        ids = tgPgOpcoesTamanho().map(function (o) { return o.valor; });
+        partes = v.split(',');
+        for (j = 0; j < partes.length && j < 7; j++) { if (ids.indexOf(partes[j]) >= 0 && est.tamanhos.indexOf(partes[j]) < 0) { est.tamanhos.push(partes[j]); } }
+      }
+      v = sp.get('tg_cor');
+      if (v) {
+        partes = v.split(',');
+        for (j = 0; j < partes.length && j < 8; j++) { if (/^[a-z0-9 \-]{1,40}$/.test(partes[j]) && est.cores.indexOf(partes[j]) < 0) { est.cores.push(partes[j]); } }
+      }
+      if (sp.get('tg_nov') === '1') { est.novidades = true; }
+      // cor que nao existe nessa busca some do link (nada de chip fantasma nem lista vazia por link editado)
+      if (est.cores.length && typeof tgPgOpcoesCor === 'function') { validas = tgPgOpcoesCor(baseItens()).map(function (o) { return o.valor; }); est.cores = est.cores.filter(function (c) { return validas.indexOf(c) >= 0; }); }
+      if (est.ordem === 'lancamentos' || est.novidades) { precisaNov = true; }
+    } catch (e) {}
+    return precisaNov;
+  }
+  var limpar, copiar;
+  function limparTudo() { est.tamanhos = []; est.cores = []; est.base = ''; est.novidades = false; est.ordem = 'relevancia'; desenhar(); }
   mais.addEventListener('click', function () { try { lote(); } catch (e) {} });
 
   function alternar(lista, v) { var p = lista.indexOf(v); if (p >= 0) { lista.splice(p, 1); } else { lista.push(v); } }
@@ -3743,7 +3824,7 @@ function tgPgMontar(q, cat, res) {
     var cats = typeof TG_CHIPS_EM_ALTA !== 'undefined' && Array.isArray(TG_CHIPS_EM_ALTA) ? TG_CHIPS_EM_ALTA : [], ocas = typeof TG_CHIPS_OCASIAO !== 'undefined' && Array.isArray(TG_CHIPS_OCASIAO) ? TG_CHIPS_OCASIAO : [], j, c, ordemChips = [], nov = null, opCor;
     while (chipsLinha.firstChild) { chipsLinha.removeChild(chipsLinha.firstChild); }
     est.tamanhos.forEach(function (t) { chipsLinha.appendChild(chipBotao('Tamanho ' + rotuloTam(t) + ' ×', true, function () { escolherTamanho(t); }, 'Tirar o filtro de tamanho ' + rotuloTam(t))); });
-    opCor = typeof tgPgOpcoesCor === 'function' ? tgPgOpcoesCor(baseItens()) : [];
+    opCor = typeof tgPgOpcoesCor === 'function' ? tgPgOpcoesCor(baseItens()) : [];  // rotulos: lista completa
     est.cores.forEach(function (v) {
       var rot = v, k;
       for (k = 0; k < opCor.length; k++) { if (opCor[k].valor === v) { rot = opCor[k].rotulo; } }
@@ -3796,11 +3877,24 @@ function tgPgMontar(q, cat, res) {
   });
 
   if (res.tamanho) { aviso = tgAcAviso(res.tamanho); }
-  filhos = [tgConselheira(), aviso, barra, chipsLinha, grade, vazio, mais];
+  copiar = el('button', { type: 'button', 'class': 'tg-busca-chip tg-busca-copiar tg-busca-oculto' }, ['Copiar link desta busca']);
+  copiar.addEventListener('click', function () {
+    var url = window.location.href, ta;
+    function feito() { tgTexto(copiar, 'Link copiado'); setTimeout(function () { tgTexto(copiar, 'Copiar link desta busca'); }, 2200); }
+    try {
+      if (window.navigator && window.navigator.clipboard && window.navigator.clipboard.writeText) { window.navigator.clipboard.writeText(url).then(feito, function () {}); return; }
+    } catch (e) {}
+    try { ta = el('textarea', { 'aria-hidden': 'true', style: 'position:fixed;opacity:0;left:-9999px' }, []); ta.value = url; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); feito(); } catch (e2) {}
+  });
+  var precisaNov = urlLer();
+  filhos = [tgConselheira(), aviso, barra, chipsLinha, copiar, grade, vazio, mais];
   raiz = el('section', { id: 'tg-busca-resultados', 'class': 'tg-busca-pagina', 'aria-label': 'Resultados da busca' }, filhos);
   injetarEstilos();
   desenhar();
   destino.insertBefore(raiz, destino.firstChild || null);
+  if (precisaNov) {
+    tgPgNovidades().then(function (h) { est.handles = h; if (!h.length) { est.novidades = false; } desenhar(); });
+  }
   if (TG_PG_ESCONDE_NATIVO) {
     nativo = document.querySelector('.js-product-table');
     if (nativo) { nativo.classList.add('tg-busca-nativo-oculto'); }
@@ -3826,6 +3920,14 @@ function ligarResgate() {
   resultados = !curada && !(tgCtx && tgCtx.features && tgCtx.features.resultados === false);
   if (!curada && !resultados && document.querySelector('.js-product-table')) { return; }
   function jaMontado() { return !!(document.getElementById('tg-busca-resgate') || document.getElementById('tg-busca-resultados')); }
+  // esconde a lista nativa ja na largada (sem piscar a nativa antes da nossa); se a nossa nao subir, a nativa volta (fail-safe)
+  function devolverNativa() {
+    var n;
+    try { if (!jaMontado() && !document.getElementById('tg-busca-curada')) { n = document.querySelector('.js-product-table'); if (n) { n.classList.remove('tg-busca-nativo-oculto'); } } } catch (e) {}
+  }
+  if (resultados) {
+    try { if (document.querySelector('.js-product-table')) { document.querySelector('.js-product-table').classList.add('tg-busca-nativo-oculto'); setTimeout(devolverNativa, 7000); } } catch (e) {}
+  }
   function seguir(cat, esg) {
     var res;
     if (jaMontado()) { return; }
@@ -3854,7 +3956,7 @@ function ligarResgate() {
       return obterEsgotados().then(function (esg) { seguir(cat, esg); });
     }
     seguir(cat, null);
-  })['catch'](function () {});
+  })['catch'](function () {}).then(function () { if (resultados) { devolverNativa(); } });
 }
 
 /* ---- src/injetor/inicio.js ---- */

@@ -1381,8 +1381,7 @@ var TG_CHIPS_OCASIAO = [
   { rotulo: 'Casual', consulta: 'casual' },
   { rotulo: 'Eventos', consulta: 'festa' },
   { rotulo: 'Office', consulta: 'office' },
-  { rotulo: 'Wedding', consulta: 'regra:wedding' },
-  { rotulo: 'Madrinhas/Convidadas', consulta: 'regra:madrinhas' }
+  { rotulo: 'Wedding', consulta: 'regra:wedding' }
 ];
 // Selecao dos chips Wedding e Madrinhas/Convidadas (Danilo, 19/11): so vestidos com estoque.
 // Wedding = vestidos Off-White (a familia de cor branco inclui o Branco antigo); Madrinhas/Convidadas = todos os outros vestidos. Enquanto nao ha tag no catalogo, vale esta regra.
@@ -1906,7 +1905,6 @@ var TG_CSS_PAGINA = [
   '.tg-busca-togg-1 .tg-busca-togg-q{width:14px}',
   '.tg-busca-chips-linha{flex-wrap:nowrap;overflow-x:auto;margin:0 0 18px;padding:2px 0 4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}',
   '.tg-busca-chips-linha::-webkit-scrollbar{display:none}',
-  '.tg-busca-copiar{margin:0 0 14px;font-size:12px;border-style:dashed}',
   '.tg-busca-mais{display:block;min-width:230px;height:var(--tgb-botao-altura);margin:30px auto 0;padding:0 24px;border:1px solid var(--tgb-cor-texto);border-radius:var(--tgb-botao-raio);background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto);font-size:var(--tgb-botao-fonte);font-weight:var(--tgb-botao-peso);letter-spacing:var(--tgb-botao-espaco);text-transform:var(--tgb-botao-transformacao);cursor:pointer}',
   // pagina de busca curada (blocos) e estado sem resultado
   '.tg-busca-curada{max-width:1400px;margin:20px auto;padding:0 var(--tgb-pad-pagina)}',
@@ -3752,7 +3750,6 @@ function tgPgMontar(q, cat, res) {
       qs = sp.toString().replace(/%2C/gi, ',');
       window.history.replaceState(window.history.state, '', window.location.pathname + (qs ? '?' + qs : '') + (window.location.hash || ''));
     } catch (e) {}
-    try { if (copiar) { if (est.base || est.tamanhos.length || est.cores.length || est.ordem !== 'relevancia' || est.novidades) { copiar.classList.remove('tg-busca-oculto'); } else { copiar.classList.add('tg-busca-oculto'); } } } catch (e) {}
   }
   function urlLer() {
     var sp, v, partes, j, k, ids, validas, precisaNov = false;
@@ -3780,7 +3777,7 @@ function tgPgMontar(q, cat, res) {
     } catch (e) {}
     return precisaNov;
   }
-  var limpar, copiar;
+  var limpar;
   function limparTudo() { est.tamanhos = []; est.cores = []; est.base = ''; est.novidades = false; est.ordem = 'relevancia'; desenhar(); }
   mais.addEventListener('click', function () { try { lote(); } catch (e) {} });
 
@@ -3877,17 +3874,8 @@ function tgPgMontar(q, cat, res) {
   });
 
   if (res.tamanho) { aviso = tgAcAviso(res.tamanho); }
-  copiar = el('button', { type: 'button', 'class': 'tg-busca-chip tg-busca-copiar tg-busca-oculto' }, ['Copiar link desta busca']);
-  copiar.addEventListener('click', function () {
-    var url = window.location.href, ta;
-    function feito() { tgTexto(copiar, 'Link copiado'); setTimeout(function () { tgTexto(copiar, 'Copiar link desta busca'); }, 2200); }
-    try {
-      if (window.navigator && window.navigator.clipboard && window.navigator.clipboard.writeText) { window.navigator.clipboard.writeText(url).then(feito, function () {}); return; }
-    } catch (e) {}
-    try { ta = el('textarea', { 'aria-hidden': 'true', style: 'position:fixed;opacity:0;left:-9999px' }, []); ta.value = url; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); feito(); } catch (e2) {}
-  });
   var precisaNov = urlLer();
-  filhos = [tgConselheira(), aviso, barra, chipsLinha, copiar, grade, vazio, mais];
+  filhos = [tgConselheira(), aviso, barra, chipsLinha, grade, vazio, mais];
   raiz = el('section', { id: 'tg-busca-resultados', 'class': 'tg-busca-pagina', 'aria-label': 'Resultados da busca' }, filhos);
   injetarEstilos();
   desenhar();

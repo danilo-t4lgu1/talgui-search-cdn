@@ -1,8 +1,8 @@
 {
   "v": 2,
   "active": true,
-  "injetor": "0298a168cb117b6a0ed02045fb5852f7711d7d9d",
-  "sri": "sha384-89kZ3pxEhJYGsjP6pqgUh1iRwzhXqBmn6zsoFPBGMHCbzULBxYJ1PBULnCYq/ws0",
+  "injetor": "09d88b2155f46cf64281062c2df6a51095a053a0",
+  "sri": "sha384-p1rNaJSfbCbL/SjS7KYr/GvZA/tOK4BKjlUhj6zeawJYzMpAXQJ9fYXt/4GwLE/z",
   "catalogo": "main",
   "min_loader": 1,
   "features": {
@@ -10,6 +10,6 @@
     "resgate": true,
     "desktop": true
   },
-  "updated_at": "2026-11-19T20:14:04.981Z",
+  "updated_at": "2026-11-23T12:53:28.120Z",
   "kill_switch_reason": ""
 }

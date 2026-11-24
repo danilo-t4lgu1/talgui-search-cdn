@@ -1497,6 +1497,76 @@ function tgTapeteNovidades(catalog, handles, excluir) {
   return out;
 }
 
+// ---------------------------------------------------------------- v12 (Danilo, 24/11): vitrine da busca inicial e conjuntos do Recom
+// Categoria Novidades inteira (nao so a da semana): as 100 mais novas vem de /novidades/?results_only=true&limit=100 (o ?mpage nao pagina nesta loja).
+var TG_NOVIDADES_CATEGORIA = '/novidades/';
+// Cores neutras da vitrine inicial (familias de tgFamiliaCor): Preto, Marrom, Cinza e Off-White (o grupo branco inclui o Branco antigo).
+var TG_VITRINE_NEUTRAS = ['preto', 'preta', 'marrom', 'cinza', 'branco'];
+var TG_VITRINE_POR_GRUPO = 2;
+function tgCorNeutra(it) { var f = tgFamiliaCor(it); return !!(f && TG_VITRINE_NEUTRAS.indexOf(f.chave) >= 0); }
+// Pecas da categoria Novidades (handles na ordem dela), em estoque; grupo (vestidos | blusas | calcas) opcional.
+function tgNovidadesDoGrupo(catalog, handles, grupo) {
+  var cat = Array.isArray(catalog) ? catalog : [], pos = {}, v = [], i, it;
+  if (!Array.isArray(handles)) return v;
+  for (i = 0; i < handles.length; i++) { if (typeof handles[i] === 'string' && !Object.prototype.hasOwnProperty.call(pos, handles[i])) pos[handles[i]] = i; }
+  for (i = 0; i < cat.length; i++) {
+    it = cat[i];
+    if (!it || typeof it.n !== 'string' || !Object.prototype.hasOwnProperty.call(pos, it.s) || !tgDisponivel(it)) continue;
+    if (grupo && tgGrupoDoItem(it) !== grupo) continue;
+    v.push(it);
+  }
+  v.sort(function (a, b) { return pos[a.s] - pos[b.s]; });
+  return v;
+}
+// Vitrine da busca inicial: 2 Vestidos, 2 Blusas e 2 Calcas. Regra (Danilo, 24/11): da categoria Novidades, na ordem dela; cor neutra; 3 ou mais
+// tamanhos em estoque; modelo com outras cores; modelos diferentes e, quando der, cores diferentes entre as duas. Faltando peca nessa regra, a regra
+// afrouxa nesta ordem: neutra sem outras cores, qualquer cor das Novidades, e por fim as mais vendidas (sem a lista das Novidades).
+function tgVitrineInicial(catalog, handles) {
+  var cat = Array.isArray(catalog) ? catalog : [], mapa = tgAgruparCores(cat, { ignorarCategoria: true }), out = {}, gs = ['vestidos', 'blusas', 'calcas'], k;
+  function outrasCores(it) { var g = mapa.get(it.id); return !!(g && Array.isArray(g.irmaos) && g.irmaos.filter(tgDisponivel).length >= 2); }
+  function cheia(it) { return Array.isArray(it.sz) && it.sz.length >= TG_TAPETE_MIN_TAMANHOS; }
+  function escolher(grupo) {
+    var nov = tgNovidadesDoGrupo(cat, handles, grupo).filter(cheia), best = tgOrdenar(tgItensDoGrupo(cat, grupo).filter(cheia), 'best-sellers'), esc = [], mods = {}, cores = {}, i, t, it, mod, f, passo, faixas;
+    function neutraCores(x) { return tgCorNeutra(x) && outrasCores(x); }
+    // faixas em ordem de preferencia; dentro de cada faixa, 1a volta pede modelo e cor novos e a 2a so modelo novo (a cor neutra vale mais que a cor diferente)
+    faixas = [nov.filter(neutraCores), nov.filter(tgCorNeutra), nov, best.filter(neutraCores), best.filter(tgCorNeutra), best];
+    for (t = 0; t < faixas.length && esc.length < TG_VITRINE_POR_GRUPO; t++) {
+      for (passo = 0; passo < 2 && esc.length < TG_VITRINE_POR_GRUPO; passo++) {
+        for (i = 0; i < faixas[t].length && esc.length < TG_VITRINE_POR_GRUPO; i++) {
+          it = faixas[t][i];
+          mod = normalizeText(tgModeloCor(it.n).modelo);
+          f = tgFamiliaCor(it);
+          if (mods[mod] || esc.indexOf(it) >= 0) continue;
+          if (passo === 0 && f && cores[f.chave]) continue;
+          esc.push(it); mods[mod] = true; if (f) cores[f.chave] = true;
+        }
+      }
+    }
+    return esc;
+  }
+  for (k = 0; k < gs.length; k++) out[gs[k]] = escolher(gs[k]);
+  return out;
+}
+// Conjuntos do Recom (GET /api/conjuntos): o par e a cor sao do Recom (nao recalcular). Aqui so se confere, no catalogo da hora, que as duas pecas
+// existem, estao em estoque e tem TG_TAPETE_MIN_TAMANHOS ou mais tamanhos em comum (a lista do Recom muda 1 vez por dia).
+// resposta: { conjuntos: [{ id, color, top: { id }, bottom: { id } }] }. Devolve [{ id, cor, cima, baixo, tamanhos }] na ordem do Recom.
+function tgConjuntosDoRecom(catalog, resposta) {
+  var cat = Array.isArray(catalog) ? catalog : [], lista = resposta && Array.isArray(resposta.conjuntos) ? resposta.conjuntos : [], porId = {}, out = [], vistos = {}, i, c, cima, baixo, comum;
+  for (i = 0; i < cat.length; i++) { if (cat[i] && cat[i].id != null) porId[String(cat[i].id)] = cat[i]; }
+  for (i = 0; i < lista.length; i++) {
+    c = lista[i];
+    if (!c || !c.top || !c.bottom || c.top.id == null || c.bottom.id == null) continue;
+    cima = porId[String(c.top.id)]; baixo = porId[String(c.bottom.id)];
+    if (!cima || !baixo || cima === baixo || !tgDisponivel(cima) || !tgDisponivel(baixo)) continue;
+    if (vistos[cima.id + '-' + baixo.id]) continue;
+    comum = tgTapeteComuns(cima.sz, baixo.sz);
+    if (comum.length < TG_TAPETE_MIN_TAMANHOS) continue;
+    vistos[cima.id + '-' + baixo.id] = true;
+    out.push({ id: cima.id + '-' + baixo.id, cor: typeof c.color === 'string' && c.color ? c.color : tgModeloCor(cima.n).cor, cima: cima, baixo: baixo, tamanhos: comum });
+  }
+  return out;
+}
+
 // Grupos da pagina de resultados (Danilo, 24/11): ao entrar em Vestidos, Blusas ou Calcas os chips mudam para os do grupo.
 // Cada chip casa a peca por TAG (g do catalogo: ex. "midi", "manga-curta", "pantalona", quando o catalogo passar a trazer) ou, enquanto nao ha tag,
 // por palavra no nome. Chip sem nenhuma peca no grupo nao aparece (so Novidades fica sempre). Wedding usa a regra dos vestidos Off-White.
@@ -1984,6 +2054,8 @@ var TG_CSS_BASE = [
   '.tg-busca-nativo-oculto{display:none!important}',
   // enquanto a busca nova nao assumiu (classe no <html>, posta pelo topo do tema ou pela lupa), a lista e as sugestoes da nativa ficam escondidas
   'html.tg-busca-pendente.tg-busca-pg .js-product-table,html.tg-busca-pendente.tg-busca-pg .js-load-more,html.tg-busca-pendente.tg-busca-pg #js-infinite-scroll-spinner,html.tg-busca-pendente #nav-search [class*="search-suggest"],html.tg-busca-pendente #nav-search .search-initial-products{display:none!important}',
+  // celular: entre o toque na lupa e a abertura da busca nova, o modal nativo nao aparece (o overlay abre por cima no mesmo instante)
+  'html.tg-busca-pendente #nav-search .modal-scrollable-area{opacity:0!important}',
   '#tg-busca-conselheira{display:none}',
   // base comum a tudo que o injetor desenha
   '#tg-busca-overlay,#tg-busca-resultados,#tg-busca-resgate,#tg-busca-curada{font-family:var(--tgb-fonte);color:var(--tgb-cor-texto);-webkit-font-smoothing:antialiased;line-height:1.35}',
@@ -2103,7 +2175,62 @@ var TG_CSS_CARD = [
   '.tg-busca-chips{display:flex;flex-wrap:wrap;gap:var(--tgb-chip-gap);margin:0;padding:0;list-style:none}',
   '.tg-busca-chip{display:inline-flex;align-items:center;flex:0 0 auto;min-height:var(--tgb-chip-altura);margin:0;padding:0 16px;border:1px solid var(--tgb-cor-borda);border-radius:var(--tgb-chip-raio);background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto);font-size:var(--tgb-chip-tam);text-decoration:none;white-space:nowrap;cursor:pointer}',
   '.tg-busca-chip:hover{border-color:var(--tgb-cor-texto)}',
-  '.tg-busca-chip-ativo{border-color:var(--tgb-cor-destaque);background:var(--tgb-cor-destaque);color:var(--tgb-cor-destaque-texto)}'
+  '.tg-busca-chip-ativo{border-color:var(--tgb-cor-destaque);background:var(--tgb-cor-destaque);color:var(--tgb-cor-destaque-texto)}',
+  // card horizontal (v12, padrao do modal Influenciadoras): foto a esquerda; nome, preco, cores, tamanhos e "Detalhes da peca" a direita
+  '.tg-busca-hc-lista{display:grid;grid-template-columns:minmax(0,1fr);gap:26px}',
+  '.tg-busca-hc-par{display:grid;grid-template-columns:minmax(0,1fr);gap:26px}',
+  '.tg-busca-hc{display:grid;grid-template-columns:42% minmax(0,1fr);gap:0 14px;align-items:start;min-width:0}',
+  '.tg-busca-hc-foto{display:block;width:100%;margin:0;padding:0;border:0;border-radius:0;background:var(--tgb-foto-fundo);aspect-ratio:2 / 3;overflow:hidden;cursor:pointer;font:inherit}',
+  '.tg-busca-hc-foto .tg-busca-thumb{width:100%;height:100%;aspect-ratio:auto;object-position:50% 20%}',
+  '.tg-busca-hc-inf{display:flex;flex-direction:column;align-items:flex-start;min-width:0;padding-top:2px}',
+  '.tg-busca-hc-nome{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;font-size:14px;font-weight:400;line-height:1.35;text-align:left}',
+  '.tg-busca-hc .tg-busca-hc-foto{cursor:default}',
+  '.tg-busca-hc-preco{margin:6px 0 0;font-size:14px}',
+  '.tg-busca-hc-preco strong{font-weight:600}',
+  '.tg-busca-hc .tg-busca-hc-cores{margin:12px 0 0;gap:9px;min-height:0}',
+  '.tg-busca-hc .tg-busca-bolinha{width:18px;height:18px}',
+  '.tg-busca-hc-cor{font-size:12px;color:var(--tgb-cor-texto-suave)}',
+  '.tg-busca-hc-tams{display:flex;flex-wrap:wrap;gap:4px;margin:12px 0 0}',
+  '.tg-busca-hc-tam{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:22px;padding:0 4px;border:1px solid var(--tgb-cor-borda);font-size:10.5px;line-height:1;color:var(--tgb-cor-texto)}',
+  'button.tg-busca-hc-det{display:inline-flex;align-items:center;gap:8px;min-height:40px;margin:14px 0 0;padding:0 14px;border:1px solid var(--tgb-cor-texto);border-radius:0;background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto);font:inherit;font-size:12.5px;line-height:1.2;cursor:pointer}',
+  'button.tg-busca-hc-det::after{content:"";width:6px;height:6px;border-top:1.5px solid currentColor;border-right:1.5px solid currentColor;transform:rotate(45deg)}',
+  // vitrine inicial: respiro de ~12% da tela entre uma secao e a proxima (a atencao so passa para o proximo bloco ao rolar)
+  '.tg-busca-tapete{margin-top:6px}',
+  '.tg-busca-tapete-secao>.tg-busca-secao-titulo{margin:22px 0 14px}',
+  '.tg-busca-tapete-secao+.tg-busca-tapete-secao{margin-top:clamp(56px,12vh,104px)}',
+  '.tg-busca-tapete-todos{display:inline-block;margin:18px 0 0;font-size:12.5px;color:inherit;text-decoration:underline;text-underline-offset:3px}',
+  // esqueleto da vitrine (mesma altura dos cards: a tela nao pula quando as pecas chegam)
+  '.tg-busca-hc-esq .tg-busca-hc-foto{animation:tg-busca-pulsa 1.2s ease-in-out infinite}',
+  '.tg-busca-hc-esq .tg-busca-hc-inf i{display:block;width:85%;height:12px;margin:4px 0 12px;background:var(--tgb-cor-fundo-suave);animation:tg-busca-pulsa 1.2s ease-in-out infinite}',
+  '.tg-busca-hc-esq .tg-busca-hc-inf i:nth-child(2){width:40%}',
+  '.tg-busca-hc-esq .tg-busca-hc-inf i:nth-child(3){width:62%}',
+  '.tg-busca-esq-titulo{width:90px;height:12px;margin:22px 0 14px;background:var(--tgb-cor-fundo-suave)}',
+  '.tg-busca-carregando{text-align:center}',
+  // pagina de Conjuntos: um par por bloco, com linha fina entre os pares
+  '.tg-busca-pagina-conj .tg-busca-hc-lista{gap:0}',
+  '.tg-busca-pagina-conj .tg-busca-hc-par{padding:24px 0;border-bottom:1px solid var(--tgb-cor-borda)}',
+  '.tg-busca-pagina-conj .tg-busca-hc-par:first-child{padding-top:4px}',
+  '.tg-busca-cj-sub{margin:0 0 14px;text-align:center;font-size:12.5px;color:var(--tgb-cor-texto-suave)}',
+  // barra grudada: os pais da pagina que cortavam (overflow) deixam o sticky funcionar (corte so na horizontal, sem criar rolagem)
+  '.tg-busca-pai-solto{overflow:visible!important;overflow-x:clip!important}',
+  'a.tg-busca-ver-nov{display:flex;align-items:center;justify-content:center;text-decoration:none}',
+  '@keyframes tg-busca-pulsa{50%{opacity:.5}}',
+  // card da busca (v12, Danilo 24/11): tamanhos e bolinhas so informam; VER PECA (contorno) abre o modal e fica no pe do card, alinhado na linha
+  'span.tg-busca-tam,span.tg-busca-bolinha{cursor:default}',
+  'span.tg-busca-tam::after,span.tg-busca-bolinha::after{display:none}',
+  'span.tg-busca-tam:hover{border-color:#555}',
+  '.tg-busca-tam-pedido{border-color:var(--tgb-cor-destaque);background:var(--tgb-cor-destaque);color:var(--tgb-cor-destaque-texto)}',
+  '.tg-busca-card .tg-busca-tams{flex-wrap:nowrap;overflow:hidden;min-height:var(--tgb-tamanho-btn)}',
+  '.tg-busca-tams-vazio{visibility:hidden}',
+  '.tg-busca-card .tg-busca-card-preco{margin-bottom:12px}',
+  '.tg-busca-card .tg-busca-add.tg-busca-ver{margin-top:auto;border-color:var(--tgb-cor-texto);background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto)}',
+  // filtros aplicados: microchips discretos dentro da barra grudada + "Limpar busca"
+  '.tg-busca-ativos{display:flex;align-items:center;gap:12px;padding:7px 0 8px;border-top:1px solid var(--tgb-cor-borda)}',
+  '.tg-busca-ativos-lista{display:flex;flex:1 1 auto;min-width:0;gap:6px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}',
+  '.tg-busca-ativos-lista::-webkit-scrollbar{display:none}',
+  '.tg-busca-micro{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;height:26px;margin:0;padding:0 8px 0 10px;border:1px solid var(--tgb-cor-texto);border-radius:var(--tgb-chip-raio);background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto);font:inherit;font-size:11px;line-height:1;white-space:nowrap;cursor:pointer}',
+  '.tg-busca-micro-x{font-size:14px;line-height:1;color:var(--tgb-cor-texto-suave)}',
+  '.tg-busca-limpar-busca{flex:0 0 auto;margin:0;padding:6px 0;border:0;background:none;color:var(--tgb-cor-texto);font:inherit;font-size:11.5px;white-space:nowrap;text-decoration:underline;text-underline-offset:3px;cursor:pointer}'
 ];
 
 var TG_CSS_PAGINA = [
@@ -2154,7 +2281,7 @@ var TG_CSS_PAGINA = [
   '.tg-busca-zero .tg-busca-bloco-titulo{justify-content:center;margin:26px 0 12px}',
   '@keyframes tg-busca-entra{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}',
   '@keyframes tg-busca-treme{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}',
-  '@media (prefers-reduced-motion:reduce){#tg-busca-overlay.tg-busca-aberto,.tg-busca-card-pede .tg-busca-tams{animation:none}}',
+  '@media (prefers-reduced-motion:reduce){#tg-busca-overlay.tg-busca-aberto,.tg-busca-card-pede .tg-busca-tams,.tg-busca-hc-esq .tg-busca-hc-foto,.tg-busca-hc-esq .tg-busca-hc-inf i{animation:none}}',
   // celular (95% do publico): campo com 16px (o iPhone nao da zoom), toque sem atraso, area segura, sem rolagem lateral
   '@media (max-width:1023px){' +
     '.tg-busca-ov-campo{font-size:16px}' +
@@ -2164,7 +2291,8 @@ var TG_CSS_PAGINA = [
     '.tg-busca-secao-titulo{margin:18px 0 8px}' +
     '.tg-busca-chip{min-height:36px;padding:0 14px;font-size:12px}' +
     '.tg-busca-chips{gap:6px}' +
-    '.tg-busca-chips-linha{gap:6px;margin:0 0 14px;padding:2px 0 6px}' +
+    '.tg-busca-chips-linha{gap:8px;margin:16px 0 16px;padding:2px 0 6px}' +
+    '.tg-busca-barra{margin:0 0 20px}' +
     '.tg-busca-termo{min-height:44px}' +
     '.tg-busca-todos{height:44px}' +
     '.tg-busca-barra-btn{height:44px;padding:0 6px;font-size:12px}' +
@@ -2663,6 +2791,21 @@ function tgQvMontarCss() {
     R + 'a' + P + 'peca-nome{display:block;margin:0 0 4px;color:' + texto + ';font-size:13px;font-weight:500;line-height:1.35;text-decoration:none}',
     P + 'peca-inf ' + P + 'rotulo{margin:10px 0 6px}',
     P + 'total{margin:0;font-size:13px;color:' + suave + ';text-align:center}',
+    // conjunto no padrao Influenciadoras: um card por peca (foto a esquerda; nome com bolinha, preco, parcelas, destaques e "Detalhes da peca")
+    P + 'cj-sub{margin:4px 0 6px;font-size:12px;line-height:1.45;color:' + suave + '}',
+    P + 'cj{display:grid;grid-template-columns:' + V('qv-cj-foto', '40%') + ' minmax(0,1fr);gap:0 14px;align-items:start;padding:16px 0;border-bottom:1px solid ' + linha + '}',
+    P + 'cj:last-child{border-bottom:0;padding-bottom:calc(16px + env(safe-area-inset-bottom,0px))}',
+    R + 'button' + P + 'cj-foto{display:block;width:100%;margin:0;padding:0;border:0;border-radius:0;background:#f2f2f2;aspect-ratio:2 / 3;overflow:hidden;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + P + 'cj-foto img{display:block;width:100%;max-width:none;height:100%;object-fit:cover}',
+    P + 'cj-inf{display:flex;flex-direction:column;align-items:flex-start;min-width:0;padding-top:2px}',
+    R + 'p' + P + 'cj-nome{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;width:100%;margin:0;font-size:14px;font-weight:400;line-height:1.35;color:' + texto + '}',
+    P + 'cj-nome ' + P + 'bolinha{margin-top:2px}',
+    P + 'cj-inf ' + P + 'preco{margin:6px 0 0;font-size:14px}',
+    P + 'cj-extra{min-height:0}',
+    P + 'cj-extra ' + P + 'parc{margin:2px 0 0}',
+    R + 'p' + P + 'cj-dest{margin:8px 0 0;font-size:12px;line-height:1.45;color:#3a3a3a}',
+    R + 'button' + P + 'cj-det{display:inline-flex;align-items:center;gap:8px;min-height:44px;margin:14px 0 0;padding:0 16px;border:1px solid ' + texto + ';border-radius:0;background:' + fundo + ';color:' + texto + ';font-family:inherit;font-size:13px;font-weight:400;line-height:1.2;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'cj-det::after{content:"";width:6px;height:6px;border-top:1.5px solid currentColor;border-right:1.5px solid currentColor;transform:rotate(45deg)}',
     '@keyframes tg-busca-qv-sobe{from{transform:translateY(24px);opacity:.6}}',
     '@keyframes tg-busca-qv-fade{from{opacity:0}}',
     '@keyframes tg-busca-qv-pulsa{50%{opacity:.5}}',
@@ -3140,58 +3283,38 @@ function tgQvAdicionar(S) {
   });
 }
 
-// ---------------------------------------------------------------- quick view do conjunto (blusa + calca / short)
-// Mostra as duas pecas do conjunto, cada uma com seus tamanhos em estoque, e adiciona as duas de uma vez (so com um tamanho em cada).
-// Mesmo painel, mesmos estilos e mesma sacola do quick view de uma peca; qualquer falha deixa o link da pagina de cada peca como saida.
-function tgQvConjMsg(S) {
-  var ok = S.partes.every(function (x) { return x.dados && x.tam; }), carregando = S.partes.some(function (x) { return x.carregando; }), esgotada = S.partes.some(function (x) { return x.dados && !x.algum; }), texto;
-  if (S.ocupado) { texto = 'Adicionando…'; } else if (esgotada) { texto = 'Conjunto indisponível'; } else { texto = 'Adicionar conjunto à sacola'; }
-  S.bAdd.textContent = texto;
-  if (ok && !S.ocupado && !esgotada) { S.bAdd.removeAttribute('disabled'); S.bAdd.removeAttribute('aria-disabled'); } else { S.bAdd.setAttribute('disabled', 'disabled'); S.bAdd.setAttribute('aria-disabled', 'true'); }
-  S.msgEl.textContent = S.msg || (!carregando && !ok && !esgotada ? 'Escolha o tamanho de cada peça.' : '');
-  S.msgEl.setAttribute('class', 'tg-busca-qv-msg' + (S.msgErro ? ' tg-busca-qv-msg-erro' : ''));
+// ---------------------------------------------------------------- quick view do conjunto (peca de cima + peca de baixo)
+// v12 (Danilo, 24/11): no padrao do modal das Influenciadoras. Cada peca e um card (foto, nome com a bolinha da cor, preco, parcelas e destaques) com
+// "Detalhes da peca", que abre o quick view daquela peca (tamanhos e sacola). Ao fechar o quick view da peca, o conjunto volta. Comprar as duas e
+// opcao da cliente: cada peca vai para a sacola pelo proprio quick view. Qualquer falha deixa o link da pagina de cada peca como saida.
+function tgQvConjDestaques(d) {
+  var ds = d && d.descricao, out = [], i;
+  if (!ds || !Array.isArray(ds.destaques)) { return ''; }
+  for (i = 0; i < ds.destaques.length && out.length < 2; i++) { if (ds.destaques[i] && ds.destaques[i].rotulo) { out.push(String(ds.destaques[i].rotulo).replace(/[:\s]+$/, '')); } }
+  return out.join(' · ');
 }
 
 function tgQvConjPintarParte(S, x) {
-  var d = x.dados, caixa, i, t, b, pr, preco, foto = urlImagem(x.item.i), cab, inf;
-  x.botoes = []; x.algum = false;
-  x.areaTam.textContent = '';
-  if (x.carregando) { x.areaTam.appendChild(tgQvNo('div', 'tg-busca-qv-esq', [el('i'), el('i'), el('i'), el('i')], { role: 'status', 'aria-label': 'Carregando tamanhos' })); return; }
-  if (!d) { x.areaTam.appendChild(el('p', { 'class': 'tg-busca-qv-msg tg-busca-qv-msg-erro' }, ['Não conseguimos carregar os tamanhos. Abra a página da peça.'])); return; }
-  caixa = tgQvNo('div', 'tg-busca-qv-tamanhos', null, { role: 'group', 'aria-label': 'Tamanho de ' + x.item.n });
-  for (i = 0; i < d.tamanhos.length; i++) {
-    t = d.tamanhos[i];
-    b = tgQvNo('button', 'tg-busca-qv-tam' + (t.disponivel ? '' : ' tg-busca-qv-tam-esg'), [t.rotulo], { type: 'button', 'aria-pressed': x.tam === t.rotulo ? 'true' : 'false', 'data-tamanho': t.rotulo });
-    if (!t.disponivel) { b.setAttribute('aria-disabled', 'true'); b.setAttribute('aria-label', t.rotulo + ', esgotado'); } else { x.algum = true; }
-    (function (tt) {
-      b.addEventListener('click', function () {
-        var j;
-        if (!tt.disponivel || S.ocupado) { return; }
-        x.tam = x.tam === tt.rotulo ? null : tt.rotulo;
-        S.msg = ''; S.msgErro = false;
-        for (j = 0; j < x.botoes.length; j++) { x.botoes[j].setAttribute('aria-pressed', x.botoes[j].getAttribute('data-tamanho') === x.tam ? 'true' : 'false'); }
-        x.rotuloTam.textContent = x.tam ? ': ' + x.tam : '';
-        tgQvConjMsg(S);
-      });
-    })(t);
-    x.botoes.push(b); caixa.appendChild(b);
-  }
-  x.areaTam.appendChild(caixa);
+  var d = x.dados, linhas = [];
+  x.extra.textContent = '';
+  if (d && d.parcelas) { linhas.push(tgQvNo('p', 'tg-busca-qv-parc', ['ou ' + d.parcelas.n + 'x de ' + reais(d.parcelas.v) + ' sem juros'])); }
+  if (d && tgQvConjDestaques(d)) { linhas.push(tgQvNo('p', 'tg-busca-qv-cj-dest', [tgQvConjDestaques(d)])); }
+  linhas.forEach(function (n) { x.extra.appendChild(n); });
 }
 
 function tgQuickViewConjunto(conj, opcoes) {
-  var S, raiz, fundo, painel, cab, titulo, bFechar, rolagem, pe, bAdd, msgEl, nomes, partes, k, mc, mb, final, pa, pb, ps = [];
+  var S, raiz, fundo, painel, cab, titulo, bFechar, rolagem, k, mc, mb;
   try {
     if (!conj || !conj.cima || !conj.baixo || !urlProduto(conj.cima.s) || !urlProduto(conj.baixo.s)) { return; }
     opcoes = opcoes && typeof opcoes === 'object' ? opcoes : {};
     if (tgQvAtivo) { tgQvFechar('trocou'); }
     tgQvEstilos();
     S = {
-      conj: conj, opcoes: opcoes, ocupado: false, msg: '', msgErro: false, fechado: false,
+      conj: conj, opcoes: opcoes, fechado: false,
       origem: typeof opcoes.origem === 'string' && /^[a-z0-9_-]{1,30}$/.test(opcoes.origem) ? opcoes.origem : 'qv',
-      foco: document.activeElement, overflowCorpo: document.body.style.overflow, overflowHtml: document.documentElement.style.overflow, seq: 0
+      foco: document.activeElement, overflowCorpo: document.body.style.overflow, overflowHtml: document.documentElement.style.overflow
     };
-    S.partes = [{ item: conj.cima, dados: null, carregando: true, tam: null, botoes: [], algum: false }, { item: conj.baixo, dados: null, carregando: true, tam: null, botoes: [], algum: false }];
+    S.partes = [{ item: conj.cima, dados: null }, { item: conj.baixo, dados: null }];
     tgQvAtivo = S;
     mc = typeof tgModeloCor === 'function' ? tgModeloCor(conj.cima.n) : { modelo: conj.cima.n, cor: '' };
     mb = typeof tgModeloCor === 'function' ? tgModeloCor(conj.baixo.n) : { modelo: conj.baixo.n, cor: '' };
@@ -3202,36 +3325,33 @@ function tgQuickViewConjunto(conj, opcoes) {
     titulo = tgQvNo('h2', 'tg-busca-qv-titulo', [mc.modelo.replace(/^\S+\s+/, '') + ' + ' + mb.modelo.replace(/^\S+\s+/, '') + (conj.cor ? ' · ' + conj.cor : '')], { id: 'tg-busca-qv-titulo' });
     bFechar = tgQvNo('button', 'tg-busca-qv-fechar', ['×'], { type: 'button', 'aria-label': 'Fechar' });
     cab = tgQvNo('div', 'tg-busca-qv-cab', [tgQvNo('div', 'tg-busca-qv-alca', [el('span')]), tgQvNo('p', 'tg-busca-qv-cab-rotulo', ['Conjunto']), bFechar]);
-    rolagem = tgQvNo('div', 'tg-busca-qv-rolagem', [titulo]);
+    rolagem = tgQvNo('div', 'tg-busca-qv-rolagem', [titulo, tgQvNo('p', 'tg-busca-qv-cj-sub', ['As peças são vendidas separadamente. Leve uma ou as duas.'])]);
     for (k = 0; k < S.partes.length; k++) {
-      (function (x) {
-        var pr = precoFinal(x.item), foto = urlImagem(x.item.i), href = urlProduto(x.item.s), inf;
-        x.areaTam = tgQvNo('div', 'tg-busca-qv-area');
-        x.rotuloTam = el('span', null, ['']);
-        inf = tgQvNo('div', 'tg-busca-qv-peca-inf', [
-          tgQvNo('a', 'tg-busca-qv-peca-nome', [x.item.n], { href: href }),
-          pr ? tgQvNo('p', 'tg-busca-qv-preco', [el('strong', null, [reais(pr.final)]), pr.de ? el('s', null, [reais(pr.de)]) : null]) : null,
-          tgQvNo('p', 'tg-busca-qv-rotulo', ['Tamanho', x.rotuloTam]),
-          x.areaTam
-        ]);
-        rolagem.appendChild(tgQvNo('div', 'tg-busca-qv-peca', [
-          tgQvNo('a', 'tg-busca-qv-peca-foto', foto ? [el('img', { src: foto, alt: x.item.n, loading: 'eager', decoding: 'async' })] : null, { href: href, 'aria-label': x.item.n, tabindex: '-1' }),
-          inf
+      (function (x, pos) {
+        var pr = precoFinal(x.item), foto = urlImagem(x.item.i), cor = typeof tgModeloCor === 'function' ? tgModeloCor(x.item.n).cor : '', nome, det, fotoBt;
+        x.extra = tgQvNo('div', 'tg-busca-qv-cj-extra');
+        nome = tgQvNo('p', 'tg-busca-qv-cj-nome', [el('span', null, [x.item.n]), cor && typeof tgCorSlug === 'function' && tgCorSlug(cor) !== 'outro' ? el('span', { 'class': 'tg-busca-bolinha tg-busca-qv-bolinha', 'data-cor': tgCorSlug(cor), role: 'img', 'aria-label': 'Cor: ' + cor }) : null]);
+        det = tgQvNo('button', 'tg-busca-qv-cj-det', ['Detalhes da peça'], { type: 'button', 'aria-label': 'Detalhes da peça: ' + x.item.n });
+        fotoBt = tgQvNo('button', 'tg-busca-qv-cj-foto', foto ? [tgFotoReserva(el('img', { src: urlImagemLeve(x.item.i, 320), alt: '', loading: 'eager', decoding: 'async' }), foto)] : null, { type: 'button', 'aria-label': 'Detalhes da peça: ' + x.item.n, tabindex: '-1' });
+        function abrir() { tgQvConjDetalhe(S, x.item, pos); }
+        det.addEventListener('click', abrir);
+        fotoBt.addEventListener('click', abrir);
+        rolagem.appendChild(tgQvNo('div', 'tg-busca-qv-cj', [
+          fotoBt,
+          tgQvNo('div', 'tg-busca-qv-cj-inf', [
+            nome,
+            pr ? tgQvNo('p', 'tg-busca-qv-preco', [el('strong', null, [reais(pr.final)]), pr.de ? el('s', null, [reais(pr.de)]) : null]) : null,
+            x.extra,
+            det
+          ])
         ]));
-      })(S.partes[k]);
+      })(S.partes[k], k);
     }
-    msgEl = tgQvNo('p', 'tg-busca-qv-msg', null, { role: 'status', 'aria-live': 'polite' });
-    rolagem.appendChild(msgEl);
-    bAdd = tgQvNo('button', 'tg-busca-qv-add', ['Adicionar conjunto à sacola'], { type: 'button' });
-    pa = precoFinal(conj.cima); pb = precoFinal(conj.baixo);
-    final = pa && pb ? pa.final + pb.final : 0;
-    pe = tgQvNo('div', 'tg-busca-qv-pe', [final ? tgQvNo('p', 'tg-busca-qv-total', ['Conjunto: ' + reais(final)]) : null, bAdd]);
-    painel.appendChild(cab); painel.appendChild(rolagem); painel.appendChild(pe);
+    painel.appendChild(cab); painel.appendChild(rolagem);
     raiz.appendChild(fundo); raiz.appendChild(painel);
-    S.raiz = raiz; S.painel = painel; S.bAdd = bAdd; S.msgEl = msgEl; S.bFechar = bFechar;
+    S.raiz = raiz; S.painel = painel; S.bFechar = bFechar;
     fundo.addEventListener('click', function () { tgQvFechar('fundo'); });
     bFechar.addEventListener('click', function () { tgQvFechar('botao'); });
-    bAdd.addEventListener('click', function () { tgQvConjAdicionar(S); });
     S.teclas = function (ev) {
       var f, a;
       if (S.fechado) { return; }
@@ -3251,43 +3371,33 @@ function tgQuickViewConjunto(conj, opcoes) {
     document.documentElement.style.overflow = 'hidden';
     document.body.appendChild(raiz);
     try { painel.focus({ preventScroll: true }); } catch (e) {}
-    tgQvEmitir(S, 'tg_qv_abrir', { position: 0, results_count: 2 });
+    tgQvEmitir(S, 'tg_qv_abrir', { position: 0, results_count: 2, reason: 'conjunto' });
     S.partes.forEach(function (x) {
       tgQvConjPintarParte(S, x);
       tgVariantesDoProduto(x.item).then(function (d) {
         if (S.fechado) { return; }
-        x.carregando = false;
-        x.dados = d && d.ok && d.tamanhos && d.tamanhos.length ? d : null;
+        x.dados = d && d.ok ? d : null;
         tgQvConjPintarParte(S, x);
-        tgQvConjMsg(S);
       });
     });
-    tgQvConjMsg(S);
   } catch (e) {
     try { tgQvFechar('erro'); } catch (e2) {}
     try { if (conj && conj.cima && urlProduto(conj.cima.s) && typeof window !== 'undefined') { window.location.assign(urlProduto(conj.cima.s)); } } catch (e3) {}
   }
 }
 
-// Adiciona as duas pecas, uma depois da outra (a sacola so abre no fim). Se a segunda falhar, avisa que a primeira ja entrou.
-function tgQvConjAdicionar(S) {
-  var a = S.partes[0], b = S.partes[1], va = null, vb = null, i, t;
-  if (S.ocupado || !a.dados || !b.dados || !a.tam || !b.tam) { return; }
-  for (i = 0; i < a.dados.tamanhos.length; i++) { t = a.dados.tamanhos[i]; if (t.rotulo === a.tam && t.disponivel) { va = t; } }
-  for (i = 0; i < b.dados.tamanhos.length; i++) { t = b.dados.tamanhos[i]; if (t.rotulo === b.tam && t.disponivel) { vb = t; } }
-  if (!va || !vb) { return; }
-  S.ocupado = true; S.msg = ''; S.msgErro = false;
-  tgQvConjMsg(S);
-  tgQvAtivo = null; // o quick view nao pode fechar sozinho entre uma peca e outra
-  function voltar() { if (!S.fechado) { tgQvAtivo = S; } }
-  function falhar(texto) { voltar(); S.ocupado = false; S.msg = texto; S.msgErro = true; tgQvConjMsg(S); }
-  tgAdicionarSacola(va.variantId, 1, { productId: a.dados.productId, abrirSacola: false }).then(function (r1) {
-    if (!r1 || !r1.ok) { falhar(r1 && r1.motivo === 'recusado' ? 'O tamanho ' + a.tam + ' de ' + a.item.n + ' acabou de esgotar. Escolha outro.' : 'Não foi possível adicionar agora. Tente de novo ou abra a página de cada peça.'); return; }
-    return tgAdicionarSacola(vb.variantId, 1, { productId: b.dados.productId }).then(function (r2) {
-      voltar();
-      if (r2 && r2.ok) { tgQvEmitir(S, 'tg_qv_add', { reason: 'conjunto' }); if (!S.fechado) { tgQvFechar('sacola'); } return; }
-      falhar('Só a primeira peça entrou na sacola (' + a.item.n + '). A segunda não foi adicionada: tente de novo ou abra a página dela.');
-    });
+// "Detalhes da peca" dentro do conjunto: abre o quick view da peca (tamanhos e sacola). Fechar volta ao conjunto; adicionar a sacola nao volta.
+function tgQvConjDetalhe(S, item, pos) {
+  var conj = S.conj, op = S.opcoes;
+  tgQvEmitir(S, 'tg_qv_conj_peca', { position: pos + 1 });
+  // o quick view da peca troca o do conjunto (tgQuickViewAbrir fecha o ativo com 'trocou'); o aoFechar do conjunto nao deve devolver o foco agora
+  S.opcoes = { origem: op.origem };
+  tgQuickViewAbrir(item, {
+    irmaos: [item], origem: S.origem,
+    aoFechar: function (motivo) {
+      if (motivo === 'sacola' || motivo === 'trocou') { try { if (typeof op.aoFechar === 'function') { op.aoFechar(motivo); } } catch (e) {} return; }
+      setTimeout(function () { try { tgQuickViewConjunto(conj, op); } catch (e) {} }, 0);
+    }
   });
 }
 
@@ -3338,6 +3448,7 @@ var TG_REC_CHAVE = 'tg_busca_recentes';
 var TG_REC_MAX = 5;
 var TG_AC_PARADAS = { de: 1, da: 1, do: 1, das: 1, dos: 1, em: 1, com: 1, sem: 1, para: 1, um: 1, uma: 1, na: 1, no: 1, e: 1, a: 1, o: 1, ao: 1 };
 var tgOv = null; // estado do overlay (null enquanto nao foi montado)
+var tgAcDesistiu = false; // o catalogo falhou nesta pagina: a busca nativa fica com a tela (o overlay nao reabre a cada foco)
 
 function tgAcLimpar(caixa) { while (caixa.firstChild) { caixa.removeChild(caixa.firstChild); } }
 
@@ -3492,6 +3603,8 @@ function tgAcSelo(p, info) {
   if (info === false) { return null; }
   if (!info) { info = p.t === 1 ? { tipo: 'best', texto: TG_SELO_BEST } : (p.t === 4 ? { tipo: 'ultimas', texto: TG_SELO_ULTIMAS } : null); }
   if (!info) { return null; }
+  // oferta (v12, Danilo 24/11): so "Melhores Ofertas" (o nome da categoria cortava no celular) e o mesmo desenho do Mais Vendidos
+  if (info.tipo === 'oferta') { info = { tipo: 'best', texto: 'Melhores Ofertas' }; }
   // a classe -campeao segue como estava (so o texto virou Best Seller)
   return el('span', { 'class': 'tg-busca-selo tg-busca-selo-' + (info.tipo === 'oferta' ? 'oferta' : (info.tipo === 'best' ? 'campeao' : (info.tipo === 'esgotado' ? 'esgotado' : 'ultimas'))) }, [info.texto]);
 }
@@ -3636,87 +3749,80 @@ function tgAcPintar(pegarCaixa, input, consulta, res) {
   caixa.classList.remove('tg-busca-oculto');
 }
 
-// Tapete de boas-vindas (Danilo, 24/11): com o campo vazio, 2 Vestidos, 2 Conjuntos, 2 Blusas, 2 Calças e 2 Novidades (o motor escolhe e confere o
-// estoque a cada abertura). Todos usam o MESMO card (foto 3/4, cor, nome, preço) e abrem o quick view (conjunto abre o quick view das duas peças).
-function tgTapeteAbrir(ev, abrir, no) {
-  try { abrir(no); } catch (e) {}
-}
-function tgTapeteCard(p, irmaosDe, pos, secao) {
-  var href = urlProduto(p.s), preco = blocoPreco(p), mc, abrir, f, n, g;
-  if (!href || !preco) { return null; }
-  mc = tgModeloCor(p.n);
-  abrir = function (no) { tgRgAbrirQuickView(p, irmaosDe(p), null, no); try { emitir('tg_busca_tapete_click', { position: pos, reason: secao }); } catch (e) {} };
-  f = el('button', { type: 'button', 'class': 'tg-busca-tp-foto', 'aria-label': p.n + ': ver tamanhos' }, [foto(p, 'tg-busca-thumb') || el('span', { 'class': 'tg-busca-thumb' })]);
-  n = el('button', { type: 'button', 'class': 'tg-busca-conj-nome' }, [mc.modelo]);
-  f.addEventListener('click', function (ev) { tgTapeteAbrir(ev, abrir, f); });
-  n.addEventListener('click', function (ev) { tgTapeteAbrir(ev, abrir, n); });
-  f.addEventListener('pointerdown', function () { tgRgPrefetch(p); });
-  g = el('div', { 'class': 'tg-busca-cores' }, [el('span', { 'class': 'tg-busca-bolinha tg-busca-bolinha-atual', 'data-cor': tgCorSlug(mc.cor), title: mc.cor }), el('span', { 'class': 'tg-busca-conj-cor' }, [mc.cor])]);
-  return el('div', { 'class': 'tg-busca-card tg-busca-tp' }, [f, g, el('div', { 'class': 'tg-busca-nome' }, [n]), el('div', { 'class': 'tg-busca-card-preco' }, [preco])]);
-}
-function tgTapeteConjunto(c, pos) {
-  var a = urlProduto(c.cima.s), b = urlProduto(c.baixo.s), pa = precoFinal(c.cima), pb = precoFinal(c.baixo), final, de, mc, mb, nome, preco, abrir, f;
-  if (!a || !b || !pa || !pb) { return null; }
-  final = pa.final + pb.final;
-  de = (pa.de || pb.de) ? (pa.de || pa.final) + (pb.de || pb.final) : 0;
-  mc = tgModeloCor(c.cima.n); mb = tgModeloCor(c.baixo.n);
-  abrir = function (no) {
-    try { if (typeof tgQuickViewConjunto === 'function') { tgQuickViewConjunto(c, { aoFechar: function () { try { if (no && no.focus) { no.focus(); } } catch (e) {} }, origem: 'tapete' }); try { emitir('tg_busca_tapete_click', { position: pos, reason: 'conjuntos' }); } catch (e) {} return; } } catch (e2) {}
-    try { window.location.assign(a); } catch (e3) {}
-  };
-  f = el('button', { type: 'button', 'class': 'tg-busca-tp-foto tg-busca-tp-foto-dupla', 'aria-label': mc.modelo + ' + ' + mb.modelo + ': ver tamanhos' }, [
-    foto(c.cima, 'tg-busca-thumb') || el('span', { 'class': 'tg-busca-thumb' }),
-    foto(c.baixo, 'tg-busca-thumb') || el('span', { 'class': 'tg-busca-thumb' }),
-    el('span', { 'class': 'tg-busca-conj-mais', 'aria-hidden': 'true' }, ['+'])
-  ]);
-  nome = el('button', { type: 'button', 'class': 'tg-busca-conj-nome' }, [mc.modelo.replace(/^\S+\s+/, '') + ' + ' + mb.modelo.replace(/^\S+\s+/, '')]);
-  f.addEventListener('click', function (ev) { tgTapeteAbrir(ev, abrir, f); });
-  nome.addEventListener('click', function (ev) { tgTapeteAbrir(ev, abrir, nome); });
-  f.addEventListener('pointerdown', function () { tgRgPrefetch(c.cima); tgRgPrefetch(c.baixo); });
-  preco = el('span', { 'class': 'tg-busca-preco' }, [el('strong', null, [reais(final)]), de ? el('s', { 'class': 'tg-busca-de' }, [reais(de)]) : null]);
-  return el('div', { 'class': 'tg-busca-card tg-busca-tp tg-busca-conj' }, [
-    f,
-    el('div', { 'class': 'tg-busca-cores' }, [el('span', { 'class': 'tg-busca-bolinha tg-busca-bolinha-atual', 'data-cor': tgCorSlug(c.cor), title: c.cor }), el('span', { 'class': 'tg-busca-conj-cor' }, [c.cor])]),
-    el('div', { 'class': 'tg-busca-nome' }, [nome]),
-    el('div', { 'class': 'tg-busca-card-preco' }, [preco])
-  ]);
-}
-
-function tgTapeteSecao(titulo, cards) {
+// Vitrine da busca inicial (v12, Danilo 24/11): com o campo vazio, Vestidos, Conjuntos, Blusas e Calcas, 2 cards horizontais por secao (padrao do modal
+// das Influenciadoras), com as cores e os tamanhos em estoque de cada peca. Vestidos, Blusas e Calcas vem da categoria Novidades (regra no motor:
+// tgVitrineInicial); o Conjunto vem do Recom (as duas pecas em cards separados; tocar em qualquer uma abre o modal com as duas). Enquanto os dados
+// chegam, um esqueleto com a mesma altura segura o lugar (a tela nao pula). Novidades e Conjuntos esperam no maximo TG_TAPETE_ESPERA; depois disso a
+// vitrine sai com o que houver (sem Novidades = mais vendidas neutras; sem Recom = sem a secao Conjuntos).
+var TG_TAPETE_ESPERA = 4000;
+function tgTapeteSecao(titulo, cards, rodape) {
   if (!cards.length) { return null; }
-  return el('div', { 'class': 'tg-busca-tapete-secao' }, [el('div', { 'class': 'tg-busca-secao-titulo' }, [titulo]), el('div', { 'class': 'tg-busca-grade tg-busca-tapete-grade' }, cards)]);
+  return el('section', { 'class': 'tg-busca-tapete-secao' }, [el('h2', { 'class': 'tg-busca-secao-titulo' }, [titulo]), el('div', { 'class': 'tg-busca-hc-lista' }, cards), rodape || null]);
 }
-
-function tgTapetePreencher(holder, cat) {
-  var t, mapa, i, nos = {}, novas, ordem = [], usados = [], tit = { vestidos: 'Vestidos', conjuntos: 'Conjuntos', blusas: 'Blusas', calcas: 'Calças' }, k, cards, sec, espera;
+function tgTapeteEsqueleto() {
+  var secs = [], s, k;
+  for (s = 0; s < 2; s++) {
+    k = [];
+    k.push(el('div', { 'class': 'tg-busca-hc tg-busca-hc-esq', 'aria-hidden': 'true' }, [el('span', { 'class': 'tg-busca-hc-foto' }), el('span', { 'class': 'tg-busca-hc-inf' }, [el('i'), el('i'), el('i')])]));
+    k.push(el('div', { 'class': 'tg-busca-hc tg-busca-hc-esq', 'aria-hidden': 'true' }, [el('span', { 'class': 'tg-busca-hc-foto' }), el('span', { 'class': 'tg-busca-hc-inf' }, [el('i'), el('i'), el('i')])]));
+    secs.push(el('div', { 'class': 'tg-busca-tapete-secao' }, [el('div', { 'class': 'tg-busca-esq-titulo' }), el('div', { 'class': 'tg-busca-hc-lista' }, k)]));
+  }
+  return el('div', { 'class': 'tg-busca-tapete-esq', role: 'status', 'aria-label': 'Carregando peças' }, secs);
+}
+function tgTapeteLimite(prom, padrao) {
+  return new Promise(function (ok) {
+    var t = setTimeout(function () { ok(padrao); }, TG_TAPETE_ESPERA);
+    Promise.resolve(prom).then(function (v) { clearTimeout(t); ok(v); }, function () { clearTimeout(t); ok(padrao); });
+  });
+}
+// O conjunto da vitrine: o primeiro do Recom com alguma das pecas nas Novidades; senao o primeiro da lista.
+function tgTapeteConjuntoEscolhido(conjs, handles) {
+  var set = {}, i;
+  if (!conjs.length) { return null; }
+  for (i = 0; i < handles.length; i++) { set[handles[i]] = true; }
+  for (i = 0; i < conjs.length; i++) { if (set[conjs[i].cima.s] || set[conjs[i].baixo.s]) { return conjs[i]; } }
+  return conjs[0];
+}
+function tgTapetePreencher(holder, cat, chipsUl) {
+  var esq;
   try {
-    if (typeof tgTapete !== 'function' || !holder.parentNode) { return; }
-    t = tgTapete(cat);
-    mapa = tgGruposCores(cat);
-    function irmaosDe(p) { var g = tgGrupoDe(mapa, p); return g && Array.isArray(g.irmaos) ? g.irmaos : [p]; }
-    ordem = ['vestidos', 'conjuntos', 'blusas', 'calcas'];
-    for (k = 0; k < ordem.length; k++) {
-      cards = [];
-      if (ordem[k] === 'conjuntos') {
-        for (i = 0; i < t.conjuntos.length; i++) { sec = tgTapeteConjunto(t.conjuntos[i], i + 1); if (sec) { cards.push(sec); } }
-      } else {
-        for (i = 0; i < t[ordem[k]].length; i++) { sec = tgTapeteCard(t[ordem[k]][i], irmaosDe, i + 1, ordem[k]); if (sec) { cards.push(sec); usados.push(t[ordem[k]][i]); } }
+    if (typeof tgVitrineInicial !== 'function' || !holder.parentNode) { return; }
+    esq = holder.querySelector('.tg-busca-tapete-esq');
+    if (!esq) { esq = tgTapeteEsqueleto(); holder.appendChild(esq); }
+    Promise.all([
+      tgTapeteLimite(typeof tgPgNovidades === 'function' ? tgPgNovidades() : [], []),
+      tgTapeteLimite(typeof tgConjuntosLista === 'function' ? tgConjuntosLista(cat) : [], [])
+    ]).then(function (r) {
+      var handles = Array.isArray(r[0]) ? r[0] : [], conjs = Array.isArray(r[1]) ? r[1] : [], v, mapa, ordem = ['vestidos', 'conjuntos', 'blusas', 'calcas'], tit = { vestidos: 'Vestidos', conjuntos: 'Conjuntos', blusas: 'Blusas', calcas: 'Calças' }, k, i, cards, sec, c, par, todos, li, a;
+      if (!holder.parentNode) { return; }
+      try {
+      v = tgVitrineInicial(cat, handles);
+      mapa = tgGruposCores(cat);
+      if (esq.parentNode) { esq.parentNode.removeChild(esq); }
+      for (k = 0; k < ordem.length; k++) {
+        cards = [];
+        todos = null;
+        if (ordem[k] === 'conjuntos') {
+          c = tgTapeteConjuntoEscolhido(conjs, handles);
+          par = c ? tgHConjunto(c, 1, 'conjuntos') : null;
+          if (par) { cards.push(par); todos = el('a', { 'class': 'tg-busca-tapete-todos', href: urlBusca('conjuntos') }, ['Ver todos os conjuntos']); }
+        } else {
+          for (i = 0; i < v[ordem[k]].length; i++) { sec = tgHCard(v[ordem[k]][i], { mapa: mapa, posicao: i + 1, secao: ordem[k] }); if (sec) { cards.push(sec); } }
+        }
+        sec = tgTapeteSecao(tit[ordem[k]], cards, todos);
+        if (sec) { holder.appendChild(sec); }
       }
-      sec = tgTapeteSecao(tit[ordem[k]], cards);
-      if (sec) { holder.appendChild(sec); }
-    }
-    // Novidades (categoria Novidades da Semana): chegam depois, no fim; se a rede falhar, a faixa simplesmente nao aparece
-    if (typeof tgPgNovidades === 'function' && typeof tgTapeteNovidades === 'function') {
-      espera = el('div', { 'class': 'tg-busca-tapete-secao tg-busca-oculto' });
-      holder.appendChild(espera);
-      tgPgNovidades().then(function (handles) {
-        var lista = tgTapeteNovidades(cat, handles, usados), cs = [], j, c, s2;
-        if (!holder.parentNode) { return; }
-        for (j = 0; j < lista.length; j++) { c = tgTapeteCard(lista[j], irmaosDe, j + 1, 'novidades'); if (c) { cs.push(c); } }
-        s2 = tgTapeteSecao('Novidades', cs);
-        if (s2) { holder.replaceChild(s2, espera); }
-      })['catch'](function () {});
-    }
+      // chip Conjuntos no Em alta (so com a lista do Recom no ar), antes do Novidades
+      if (conjs.length && chipsUl && chipsUl.parentNode && !chipsUl.querySelector('[data-tg-chip="conjuntos"]')) {
+        a = el('a', { 'class': 'tg-busca-chip', href: urlBusca('conjuntos') }, ['Conjuntos']);
+        a.setAttribute('data-tg-chip', 'conjuntos');
+        a.addEventListener('click', function () { try { emitir('tg_busca_chip', { reason: 'conjuntos' }); } catch (e) {} });
+        li = el('li', null, [a]);
+        chipsUl.insertBefore(li, chipsUl.lastChild || null);
+      }
+      emitir('tg_busca_tapete_view', { reason: handles.length ? 'novidades' : 'reserva', results_count: holder.querySelectorAll('.tg-busca-hc').length });
+      } catch (e2) { try { if (esq.parentNode) { esq.parentNode.removeChild(esq); } } catch (e3) {} }
+    })['catch'](function () { try { if (esq.parentNode) { esq.parentNode.removeChild(esq); } } catch (e) {} });
   } catch (e) {}
 }
 
@@ -3739,9 +3845,9 @@ function tgAcVazio(caixa) {
     caixa.appendChild(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Em alta']));
     caixa.appendChild(chips);
   }
-  holder = el('div', { 'class': 'tg-busca-tapete' });
+  holder = el('div', { 'class': 'tg-busca-tapete' }, [tgTapeteEsqueleto()]);
   caixa.appendChild(holder);
-  try { if (typeof obterCatalogo === 'function') { obterCatalogo().then(function (cat) { if (cat) { tgTapetePreencher(holder, cat); } })['catch'](function () {}); } } catch (e) {}
+  try { if (typeof obterCatalogo === 'function') { obterCatalogo().then(function (cat) { if (cat) { tgTapetePreencher(holder, cat, chips); } })['catch'](function () {}); } } catch (e) {}
   if (!chips && !rec.length) { caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Digite o tipo da peça, o nome ou a cor.'])); }
   caixa.classList.remove('tg-busca-oculto');
 }
@@ -3769,7 +3875,14 @@ function tgAcDesenhar(pegarCaixa, input, consulta) {
     if (existente) { tgAcLimpar(existente); existente.classList.add('tg-busca-oculto'); }
     return;
   }
+  // catalogo ainda chegando (o overlay abre no toque): um aviso discreto no lugar das pecas, so se a espera passar de um instante
+  var pronto = false;
+  setTimeout(function () {
+    var cx;
+    try { if (!pronto && tgOv && tgOv.aberto && input.value.trim() === consulta) { cx = pegarCaixa(); if (cx && cx === tgOv.caixa) { tgAcLimpar(cx); cx.appendChild(el('div', { 'class': 'tg-busca-banner tg-busca-carregando', role: 'status' }, ['Carregando as peças…'])); cx.classList.remove('tg-busca-oculto'); } } } catch (e) {}
+  }, 150);
   obterCatalogo().then(function (cat) {
+    pronto = true;
     if (!cat || input.value.trim() !== consulta) { return; }
     function desenhar(res) {
       if (!res.esgotado && !res.curada) { res.termos = tgAcTermos(consulta, cat); }
@@ -3822,7 +3935,8 @@ function tgOvMontar() {
   tgOv.atualizar = atualizar;
   // o teclado desce quando a cliente rola a lista (as pecas ficam a vista)
   corpo.addEventListener('touchmove', function () { try { if (document.activeElement === campo) { campo.blur(); } } catch (e) {} }, { passive: true });
-  campo.addEventListener('input', function () { try { atualizar(false); } catch (e) {} });
+  // o texto tambem vai para o campo nativo do tema (sem disparar eventos): se a busca nova desistir, a nativa ja tem o que foi digitado
+  campo.addEventListener('input', function () { try { if (tgOv && tgOv.nativo) { tgOv.nativo.value = campo.value; } } catch (e) {} try { atualizar(false); } catch (e) {} });
   voltar.addEventListener('click', function () { try { tgOvFechar(); } catch (e) {} });
   limpar.addEventListener('click', function () { try { campo.value = ''; atualizar(true); campo.focus(); } catch (e) {} });
   form.addEventListener('submit', function (ev) {
@@ -3848,9 +3962,10 @@ function tgOvMontar() {
 }
 
 // Abre o overlay (monta na primeira vez). "valor" (opcional): texto que ja estava no campo nativo do tema.
-function tgOvAbrir(valor) {
+function tgOvAbrir(valor, nativo) {
   var ja;
   if (!tgOv) { tgOvMontar(); }
+  if (nativo) { tgOv.nativo = nativo; }
   ja = tgOv.aberto;
   tgOv.aberto = true;
   tgOv.raiz.classList.remove('tg-busca-oculto');
@@ -3859,6 +3974,21 @@ function tgOvAbrir(valor) {
   if (typeof valor === 'string' && (!ja || tgOv.campo.value !== valor)) { tgOv.campo.value = valor; }
   tgOv.atualizar(true);
   try { tgOv.campo.focus(); } catch (e) {}
+}
+
+// Sem catalogo: o overlay sai sem fechar o modal nativo (a busca nativa assume na hora, com o foco no campo dela).
+function tgOvDesistir(nativo) {
+  var st, estava;
+  tgAcDesistiu = true;
+  if (!tgOv) { return; }
+  estava = tgOv.aberto;
+  // sem rastro (falha fechada): o overlay sai do DOM e, se nada mais da busca nova esta na pagina, os estilos tambem
+  try { if (nativo && tgOv.campo.value && !nativo.value) { nativo.value = tgOv.campo.value; } } catch (e) {}
+  try { if (tgOv.raiz.parentNode) { tgOv.raiz.parentNode.removeChild(tgOv.raiz); } } catch (e) {}
+  tgOv = null;
+  document.documentElement.classList.remove('tg-busca-trava');
+  try { if (!document.querySelector('#tg-busca-resultados, #tg-busca-resgate, #tg-busca-curada')) { st = document.getElementById('tg-busca-estilos'); if (st && st.parentNode) { st.parentNode.removeChild(st); } } } catch (e) {}
+  try { if (estava && nativo && nativo.focus) { nativo.focus(); } } catch (e) {}
 }
 
 function tgOvFechar() {
@@ -3881,14 +4011,16 @@ function ligarAutocomplete() {
   var inputs = document.querySelectorAll('.js-search-input'), tocou = false, botoes, i;
   if (!inputs || !inputs.length) { return; }
   function primeira() { if (!tocou) { tocou = true; obterCatalogo(); } }
-  // Abre o overlay depois que o catalogo carregou (sem catalogo nao ha overlay nem rastro). O texto vem do campo nativo na hora de abrir.
+  // v12 (Danilo, 24/11): o overlay abre NO TOQUE, sem esperar o catalogo (antes, no 4G, a busca nativa ficava segundos na tela). O que depende do
+  // catalogo (vitrine, pecas) chega depois, com esqueleto. Sem catalogo (falha ou tempo esgotado), o overlay sai e a busca nativa assume, com o foco no campo dela.
   function abrir(nativo) {
+    if (tgAcDesistiu) { return; }
     tgPend(true);
+    try { tgOvAbrir(nativo.value, nativo); } catch (e) {}
     obterCatalogo().then(function (cat) {
-      if (!cat) { tgPend(false); return; }
-      tgOvAbrir(nativo.value);
       tgPend(false);
-    })['catch'](function () { tgPend(false); });
+      if (!cat) { tgOvDesistir(nativo); }
+    })['catch'](function () { tgPend(false); tgOvDesistir(nativo); });
   }
   function ligar(nativo) {
     nativo.addEventListener('focus', function () {
@@ -3907,10 +4039,18 @@ function ligarAutocomplete() {
     });
   }
   for (i = 0; i < inputs.length; i++) { ligar(inputs[i]); }
+  // a cliente tocou na lupa antes de a busca nova chegar: o modal nativo ja esta aberto, entao a nossa abre por cima dele agora
+  try {
+    (function () {
+      var nav = document.getElementById('nav-search'), campo = nav ? nav.querySelector('.js-search-input') : null;
+      var cs = campo ? window.getComputedStyle(nav) : null, r = campo ? nav.getBoundingClientRect() : null;
+      if (campo && nav.classList.contains('modal-show') && cs.display !== 'none' && cs.visibility !== 'hidden' && r.height > 0 && r.bottom > 0 && r.top < (window.innerHeight || 0)) { primeira(); abrir(campo); }
+    })();
+  } catch (e) {}
   botoes = document.querySelectorAll('.js-search-button');
   for (i = 0; i < botoes.length; i++) {
     // pointerdown vem antes do click: o pedido do catalogo (L21) sai um pouco mais cedo, sem passar a pedir nada sem interacao (L6)
-    botoes[i].addEventListener('pointerdown', function () { try { primeira(); injetarEstilos(); tgPend(true); setTimeout(function () { tgPend(false); }, 5000); } catch (e) {} }, { passive: true });
+    botoes[i].addEventListener('pointerdown', function () { try { if (tgAcDesistiu) { return; } primeira(); injetarEstilos(); tgPend(true); setTimeout(function () { tgPend(false); }, 5000); } catch (e) {} }, { passive: true });
     botoes[i].addEventListener('click', function () { try { primeira(); } catch (e) {} });
   }
 }
@@ -4010,9 +4150,10 @@ function tgRgAbrirQuickView(item, irmaos, tamanho, foco) {
 }
 
 // ---------------------------------------------------------------- card
-// Bolinhas de cor dos irmaos do modelo. Menos de 2 cores, ou sem o agrupamento do motor = sem bolinhas.
-function tgRgCores(p, op, estado) {
-  var g = tgGrupoDe(op && op.mapa, p), lista = [], bolas = [], i, ir, gi, cor, atual, b, mais;
+// Bolinhas de cor dos irmaos do modelo (v12, Danilo 24/11): so informacao visual, sem clique (a escolha de cor e tamanho fica no modal).
+// Menos de 2 cores, ou sem o agrupamento do motor = sem bolinhas.
+function tgRgCores(p, op) {
+  var g = tgGrupoDe(op && op.mapa, p), lista = [], bolas = [], nomes = [], i, ir, gi, cor, atual;
   if (!g || !Array.isArray(g.irmaos)) { return null; }
   atual = typeof normalizeText === 'function' ? normalizeText(g.cor || '') : '';
   for (i = 0; i < g.irmaos.length; i++) {
@@ -4022,90 +4163,42 @@ function tgRgCores(p, op, estado) {
     if (ir && urlProduto(ir.s) && cor) { lista.push({ item: ir, cor: cor }); }
   }
   if (lista.length < 2) { return null; }
-  function ligar(botao, item) {
-    botao.addEventListener('click', function () { tgRgAbrirQuickView(item, g.irmaos, estado.escolhido, botao); try { emitir('tg_busca_cor_click', { position: op.posicao || 0 }); } catch (e) {} });
-    botao.addEventListener('pointerdown', function () { tgRgPrefetch(item); });
-    botao.addEventListener('focus', function () { tgRgPrefetch(item); });
-  }
   for (i = 0; i < lista.length && i < TG_PG_BOLINHAS_MAX; i++) {
-    b = el('button', { type: 'button', 'class': 'tg-busca-bolinha' + (lista[i].item === p || (atual && normalizeText(lista[i].cor) === atual) ? ' tg-busca-bolinha-atual' : '') + (tgDisponivel(lista[i].item) ? '' : ' tg-busca-bolinha-esgotada'), 'data-cor': tgCorSlug(lista[i].cor), 'aria-label': 'Cor ' + lista[i].cor + ': ver tamanhos' + (tgDisponivel(lista[i].item) ? '' : ' (esgotada)') });
-    ligar(b, lista[i].item);
-    bolas.push(b);
+    bolas.push(el('span', { 'class': 'tg-busca-bolinha' + (lista[i].item === p || (atual && normalizeText(lista[i].cor) === atual) ? ' tg-busca-bolinha-atual' : '') + (tgDisponivel(lista[i].item) ? '' : ' tg-busca-bolinha-esgotada'), 'data-cor': tgCorSlug(lista[i].cor), 'aria-hidden': 'true' }));
+    nomes.push(lista[i].cor);
   }
-  if (lista.length > TG_PG_BOLINHAS_MAX) {
-    mais = el('button', { type: 'button', 'class': 'tg-busca-bolinha tg-busca-bolinha-mais', 'aria-label': 'Ver as ' + lista.length + ' cores' }, ['+' + (lista.length - TG_PG_BOLINHAS_MAX)]);
-    ligar(mais, p);
-    bolas.push(mais);
-  }
-  return el('div', { 'class': 'tg-busca-cores', role: 'group', 'aria-label': 'Cores' }, bolas);
+  if (lista.length > TG_PG_BOLINHAS_MAX) { bolas.push(el('span', { 'class': 'tg-busca-bolinha-mais', 'aria-hidden': 'true' }, ['+' + (lista.length - TG_PG_BOLINHAS_MAX)])); }
+  return el('div', { 'class': 'tg-busca-cores', role: 'img', 'aria-label': 'Cores: ' + nomes.join(', ') + (lista.length > TG_PG_BOLINHAS_MAX ? ' e mais ' + (lista.length - TG_PG_BOLINHAS_MAX) : '') }, bolas);
 }
 
-// Tamanhos em estoque (clicaveis) + botao Adicionar. Devolve [nos] (vazio se a peca nao tem tamanho em estoque).
-function tgRgCompra(p, card, estado, op) {
-  var tams = [], botoes = [], i, v, add, msg, ocupado = false, href = urlProduto(p.s), destaque = {}, k;
-  if (!tgDisponivel(p)) { return []; }
+// Tamanhos em estoque (so informacao, sem clique) e o botao VER PECA, o unico que abre o modal (v12, Danilo 24/11).
+// Na busca por tamanho ("vestido G") o tamanho pedido vem marcado e ja chega escolhido no modal.
+function tgRgVer(p, op) {
+  var tams = [], i, v, ver, pedido = null, destaque = {}, k, irmaos;
   if (Array.isArray(op && op.destaque)) { for (k = 0; k < op.destaque.length; k++) { if (typeof op.destaque[k] === 'string') { destaque[op.destaque[k].toUpperCase()] = true; } } }
-  msg = el('div', { 'class': 'tg-busca-msg', role: 'status', 'aria-live': 'polite' });
-  add = el('button', { type: 'button', 'class': 'tg-busca-add', 'aria-disabled': 'true' }, ['Adicionar']);
-  function pintarAdd() { add.setAttribute('aria-disabled', estado.escolhido ? 'false' : 'true'); }
-  function escolher(rotulo) {
-    var j;
-    estado.escolhido = estado.escolhido === rotulo ? null : rotulo;
-    for (j = 0; j < botoes.length; j++) { botoes[j].setAttribute('aria-pressed', botoes[j].getAttribute('data-tam') === estado.escolhido ? 'true' : 'false'); }
-    card.classList.remove('tg-busca-card-pede');
-    tgTexto(msg, '');
-    pintarAdd();
-    if (estado.escolhido) { tgRgPrefetch(p); }
-  }
-  function ligarTam(b, rotulo) {
-    b.addEventListener('click', function () { try { escolher(rotulo); } catch (e) {} });
-  }
-  for (i = 0; i < p.sz.length && i < 12; i++) {
-    v = p.sz[i];
-    if (typeof v !== 'string' || !v) { continue; }
-    k = el('button', { type: 'button', 'class': 'tg-busca-tam', 'data-tam': v, 'aria-pressed': 'false', 'aria-label': 'Tamanho ' + v }, [v]);
-    ligarTam(k, v);
-    botoes.push(k);
-    tams.push(k);
-  }
-  if (!tams.length) { return []; }
-  // busca por tamanho ("vestido G"): o tamanho pedido ja vem escolhido no card
-  for (i = 0; i < botoes.length; i++) { if (destaque[botoes[i].getAttribute('data-tam').toUpperCase()]) { escolher(botoes[i].getAttribute('data-tam')); break; } }
-  function falhou(texto) {
-    ocupado = false;
-    tgTexto(add, 'Adicionar');
-    tgTexto(msg, texto + ' ');
-    if (href) { msg.appendChild(el('a', { href: href }, ['Abrir a peça'])); }
-  }
-  add.addEventListener('click', function () {
-    if (ocupado) { return; }
-    if (!estado.escolhido) {
-      card.classList.add('tg-busca-card-pede');
-      tgTexto(msg, 'Escolha um tamanho');
-      setTimeout(function () { try { card.classList.remove('tg-busca-card-pede'); } catch (e) {} }, 700);
-      return;
+  if (tgDisponivel(p) && Array.isArray(p.sz)) {
+    for (i = 0; i < p.sz.length && i < 12; i++) {
+      v = p.sz[i];
+      if (typeof v !== 'string' || !v) { continue; }
+      if (destaque[v.toUpperCase()] && !pedido) { pedido = v; }
+      tams.push(el('span', { 'class': 'tg-busca-tam' + (destaque[v.toUpperCase()] ? ' tg-busca-tam-pedido' : '') }, [v]));
     }
-    ocupado = true;
-    tgTexto(add, 'Adicionando…');
-    tgRgAdicionar(p, estado.escolhido).then(function (r) {
-      if (r && r.ok) {
-        ocupado = false;
-        add.classList.add('tg-busca-add-ok');
-        tgTexto(add, 'Adicionado ✓');
-        try { emitir('tg_busca_add_card', { position: op.posicao || 0 }); } catch (e) {}
-        setTimeout(function () { try { add.classList.remove('tg-busca-add-ok'); tgTexto(add, 'Adicionar'); } catch (e2) {} }, 2200);
-        return;
-      }
-      falhou(r && r.semTamanho ? 'Esse tamanho acabou.' : 'Não conseguimos adicionar aqui.');
-    })['catch'](function () { falhou('Não conseguimos adicionar aqui.'); });
+  }
+  irmaos = (tgGrupoDe(op && op.mapa, p) || {}).irmaos || [p];
+  ver = el('button', { type: 'button', 'class': 'tg-busca-add tg-busca-ver', 'aria-label': 'Ver peça: ' + p.n }, ['Ver peça']);
+  ver.addEventListener('click', function () {
+    try { tgRgAbrirQuickView(p, irmaos, pedido, ver); } catch (e) {}
+    try { emitir('tg_busca_ver_peca', { position: (op && op.posicao) || 0 }); } catch (e2) {}
   });
-  return [el('div', { 'class': 'tg-busca-tams', role: 'group', 'aria-label': 'Tamanhos em estoque' }, tams), add, msg];
+  ver.addEventListener('pointerdown', function () { tgRgPrefetch(p); });
+  return { tams: tams.length ? el('div', { 'class': 'tg-busca-tams', role: 'img', 'aria-label': 'Tamanhos em estoque: ' + p.sz.join(', ') }, tams) : el('div', { 'class': 'tg-busca-tams tg-busca-tams-vazio', 'aria-hidden': 'true' }), ver: ver };
 }
 
 // Card da peca. "info" (opcional): o selo do motor (false = sem selo; undefined = nao mostra selo nenhum). "tamanhos" (opcional): tamanho pedido na busca.
 // "op" (opcional): { mapa (tgAgruparCores), posicao, esgotada: true (card simples, sem tamanhos nem botao) }.
+// Estrutura fixa (foto, cores, nome em 2 linhas, tamanhos, preco, VER PECA): cards de nome curto e longo ficam alinhados na mesma linha da grade.
 function tgRgCard(p, info, tamanhos, op) {
-  var href = urlProduto(p.s), preco = blocoPreco(p), selo, imagem, esgotada, card, estado, filhos, cores, compra, i, pf, pp;
+  var href = urlProduto(p.s), preco = blocoPreco(p), selo, imagem, esgotada, card, filhos, cores, ver, i, pf, pp;
   if (!href || !preco) { return null; }
   op = op || {};
   esgotada = !!op.esgotada || !tgDisponivel(p);
@@ -4113,7 +4206,6 @@ function tgRgCard(p, info, tamanhos, op) {
   if (!selo && info !== undefined && esgotada) { selo = tgAcSelo(p, { tipo: 'esgotado', texto: typeof TG_SELO_ESGOTADO !== 'undefined' ? TG_SELO_ESGOTADO : 'Tamanho esgotado' }); }
   imagem = foto(p, 'tg-busca-thumb') || el('span', { 'class': 'tg-busca-thumb' });
   card = el('div', { 'class': esgotada && (op.esgotada || info !== undefined) ? 'tg-busca-card tg-busca-card-esgotado' : 'tg-busca-card' });
-  estado = { escolhido: null };
   pf = el('a', { 'class': 'tg-busca-card-link', href: href, 'aria-hidden': 'true' }, [imagem]);
   pf.setAttribute('tabindex', '-1');
   pp = el('a', { 'class': 'tg-busca-card-link tg-busca-card-preco', href: href, 'aria-hidden': 'true' }, [preco]);
@@ -4123,16 +4215,14 @@ function tgRgCard(p, info, tamanhos, op) {
     el('a', { 'class': 'tg-busca-card-link tg-busca-card-texto', href: href }, [el('div', { 'class': 'tg-busca-nome' }, [p.n])])
   ];
   if (!op.esgotada) {
-    cores = tgRgCores(p, op, estado);
-    // sem outras cores: o espaco das bolinhas fica reservado (o grid nao muda de altura e a peca ja tem onde receber uma cor nova)
+    cores = tgRgCores(p, op);
+    // sem outras cores: o espaco das bolinhas fica reservado (o grid nao muda de altura)
     if (!cores) { cores = el('div', { 'class': 'tg-busca-cores tg-busca-cores-vazio', 'aria-hidden': 'true' }); }
     filhos.splice(1, 0, cores);
-  }
-  if (!op.esgotada) {
-    compra = tgRgCompra(p, card, estado, { posicao: op.posicao, destaque: tamanhos });
-    // ordem da categoria: nome, tamanhos, preco; depois o botao e a mensagem
-    if (compra.length) { filhos.push(compra[0]); filhos.push(pp); } else { filhos.push(pp); }
-    for (i = 1; i < compra.length; i++) { filhos.push(compra[i]); }
+    ver = tgRgVer(p, { posicao: op.posicao, destaque: tamanhos, mapa: op.mapa });
+    filhos.push(ver.tams);
+    filhos.push(pp);
+    filhos.push(ver.ver);
   } else { filhos.push(pp); }
   for (i = 0; i < filhos.length; i++) { if (filhos[i]) { card.appendChild(filhos[i]); } }
   card.addEventListener('pointerdown', function () { tgRgPrefetch(p); });
@@ -4269,44 +4359,251 @@ function tgRgMontar(q, cat, esg) {
 }
 
 // ---------------------------------------------------------------- pagina de resultados
-// Categoria Novidades da Semana (ordem das pecas na loja): baixa a pagina da categoria (so leitura, mesma origem) e guarda os handles na ordem em que aparecem.
-// Falha ou demora (6 s) = lista vazia: o filtro/ordem Lancamentos simplesmente nao muda nada.
+// Categoria Novidades (v12, 24/11): as 100 pecas mais novas da categoria inteira numa so leitura (results_only + limit; o ?mpage nao pagina nesta
+// loja e trazia so 16). So leitura, mesma origem. Os handles ficam na sessao por 30 min (uma leitura por visita). Falha ou demora (8 s) = lista vazia:
+// Novidades e Lancamentos simplesmente nao mudam nada.
+var TG_NOV_LIMITE = 100;
+var TG_NOV_CHAVE = 'tg_busca_nov';
+var TG_NOV_VALIDADE = 30 * 60 * 1000;
 var tgPgNovidadesCache = null;
-function tgPgNovidades() {
-  var url = typeof TG_NOVIDADES_URL === 'string' ? TG_NOVIDADES_URL : '/novidades/novidades-da-semana/';
-  if (tgPgNovidadesCache) { return tgPgNovidadesCache; }
-  function baixar(n) {
-    return new Promise(function (ok) {
-      var t = setTimeout(function () { ok(null); }, 6000);
-      try {
-        fetch(url + (n > 1 ? '?mpage=' + n : ''), { credentials: 'same-origin' }).then(function (r) { return r.ok ? r.text() : null; }).then(function (txt) { clearTimeout(t); ok(txt); }, function () { clearTimeout(t); ok(null); });
-      } catch (e) { clearTimeout(t); ok(null); }
-    });
-  }
-  function handles(txt, saida, vistos) {
-    var doc, links, i, m, novos = 0;
-    try {
-      doc = new DOMParser().parseFromString(txt, 'text/html');
-      links = doc.querySelectorAll('.js-product-table a[href*="/produtos/"], .category-body a[href*="/produtos/"]');
-      if (!links.length) { links = doc.querySelectorAll('a[href*="/produtos/"]'); }
-      for (i = 0; i < links.length; i++) {
-        m = /\/produtos\/([a-z0-9][a-z0-9-]*)\/?/.exec(links[i].getAttribute('href') || '');
-        if (m && urlProduto(m[1]) && !vistos[m[1]]) { vistos[m[1]] = true; saida.push(m[1]); novos++; }
-      }
-    } catch (e) {}
-    return novos;
-  }
-  tgPgNovidadesCache = new Promise(function (ok) {
-    var saida = [], vistos = {};
-    function passo(n) {
-      baixar(n).then(function (txt) {
-        if (!txt || n > 6 || !handles(txt, saida, vistos)) { if (!saida.length) { tgPgNovidadesCache = null; } ok(saida); return; }
-        passo(n + 1);
-      });
+function tgPgHandlesDoHtml(txt) {
+  var saida = [], vistos = {}, doc, links, i, m;
+  try {
+    doc = new DOMParser().parseFromString(txt, 'text/html');
+    links = doc.querySelectorAll('a[href*="/produtos/"]');
+    for (i = 0; i < links.length; i++) {
+      m = /\/produtos\/([a-z0-9][a-z0-9-]*)\/?/.exec(links[i].getAttribute('href') || '');
+      if (m && urlProduto(m[1]) && !vistos[m[1]]) { vistos[m[1]] = true; saida.push(m[1]); }
     }
-    passo(1);
+  } catch (e) {}
+  return saida;
+}
+function tgPgNovidades() {
+  var base = typeof TG_NOVIDADES_CATEGORIA === 'string' ? TG_NOVIDADES_CATEGORIA : '/novidades/', guardado, agora = Date.now(), h;
+  if (tgPgNovidadesCache) { return tgPgNovidadesCache; }
+  try {
+    guardado = JSON.parse(window.sessionStorage.getItem(TG_NOV_CHAVE) || 'null');
+    if (guardado && Array.isArray(guardado.h) && typeof guardado.t === 'number' && agora >= guardado.t && agora - guardado.t < TG_NOV_VALIDADE) {
+      h = guardado.h.filter(function (x) { return typeof x === 'string' && !!urlProduto(x); }).slice(0, TG_NOV_LIMITE);
+      if (h.length) { tgPgNovidadesCache = Promise.resolve(h); return tgPgNovidadesCache; }
+    }
+  } catch (e) {}
+  tgPgNovidadesCache = new Promise(function (ok) {
+    var feito = false, t = setTimeout(function () { fim([]); }, 8000);
+    function fim(lista) {
+      if (feito) { return; }
+      feito = true; clearTimeout(t);
+      if (!lista.length) { tgPgNovidadesCache = null; } else { try { window.sessionStorage.setItem(TG_NOV_CHAVE, JSON.stringify({ t: Date.now(), h: lista })); } catch (e) {} }
+      ok(lista);
+    }
+    try {
+      fetch(base + '?results_only=true&limit=' + TG_NOV_LIMITE, { credentials: 'same-origin' }).then(function (r) { return r.ok ? r.text() : ''; }).then(function (txt) { fim(txt ? tgPgHandlesDoHtml(txt).slice(0, TG_NOV_LIMITE) : []); }, function () { fim([]); });
+    } catch (e) { fim([]); }
   });
   return tgPgNovidadesCache;
+}
+
+// Conjuntos do Recom (v12, 24/11): GET /api/conjuntos (o par e a cor sao do Recom; o CDN dele guarda 1 dia). So ids e cor sao aproveitados; o resto
+// (nome, foto, preco, tamanhos) vem do catalogo da busca, conferido na hora (tgConjuntosDoRecom). Guardado na sessao por 1 h. Falha = sem conjuntos:
+// o chip e a faixa de Conjuntos simplesmente nao aparecem.
+var TG_CONJUNTOS_URL = 'https://app-partners-recomendados.vercel.app/api/conjuntos';
+var TG_CONJ_CHAVE = 'tg_busca_conj';
+var TG_CONJ_VALIDADE = 60 * 60 * 1000;
+var tgConjCache = null;
+function tgConjValidar(d) {
+  var out = [], i, c, cor;
+  if (!d || typeof d !== 'object' || !Array.isArray(d.conjuntos)) { return null; }
+  for (i = 0; i < d.conjuntos.length && out.length < 400; i++) {
+    c = d.conjuntos[i];
+    if (!c || !c.top || !c.bottom) { continue; }
+    if (!/^\d{1,15}$/.test(String(c.top.id)) || !/^\d{1,15}$/.test(String(c.bottom.id))) { continue; }
+    cor = typeof c.color === 'string' && c.color.length <= 40 ? c.color : '';
+    out.push({ color: cor, top: { id: String(c.top.id) }, bottom: { id: String(c.bottom.id) } });
+  }
+  return out.length ? { conjuntos: out } : null;
+}
+function tgConjuntosBaixar() {
+  var guardado, agora = Date.now(), v;
+  if (tgConjCache) { return tgConjCache; }
+  try {
+    guardado = JSON.parse(window.sessionStorage.getItem(TG_CONJ_CHAVE) || 'null');
+    if (guardado && typeof guardado.t === 'number' && agora >= guardado.t && agora - guardado.t < TG_CONJ_VALIDADE) {
+      v = tgConjValidar(guardado.d);
+      if (v) { tgConjCache = Promise.resolve(v); return tgConjCache; }
+    }
+  } catch (e) {}
+  tgConjCache = new Promise(function (ok) {
+    var feito = false, t = setTimeout(function () { fim(null); }, 5000);
+    function fim(d) {
+      if (feito) { return; }
+      feito = true; clearTimeout(t);
+      if (!d) { tgConjCache = null; } else { try { window.sessionStorage.setItem(TG_CONJ_CHAVE, JSON.stringify({ t: Date.now(), d: d })); } catch (e) {} }
+      ok(d);
+    }
+    try {
+      fetch(TG_CONJUNTOS_URL, { credentials: 'omit', mode: 'cors' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) { fim(tgConjValidar(j)); }, function () { fim(null); });
+    } catch (e) { fim(null); }
+  });
+  return tgConjCache;
+}
+// Conjuntos prontos para a tela (lista vazia se o Recom nao respondeu ou nada passou na conferencia de estoque).
+function tgConjuntosLista(cat) {
+  return tgConjuntosBaixar().then(function (d) {
+    try { return d && typeof tgConjuntosDoRecom === 'function' ? tgConjuntosDoRecom(cat, d) : []; } catch (e) { return []; }
+  })['catch'](function () { return []; });
+}
+function tgEhBuscaConjuntos(q) {
+  var n = typeof normalizeText === 'function' ? normalizeText(q || '') : String(q || '').toLowerCase().trim();
+  return n === 'conjunto' || n === 'conjuntos';
+}
+
+// ---------------------------------------------------------------- card horizontal (v12, padrao do modal das Influenciadoras)
+// Foto a esquerda; nome, bolinhas de cor, preco, tamanhos em estoque e "Detalhes da peca" a direita. Usado na tela inicial e na pagina de Conjuntos.
+// op: { mapa (tgGruposCores), conjunto (o par: tocar em qualquer parte abre o modal do conjunto), posicao, secao, aoAbrir }.
+function tgHCard(p, op) {
+  var href = urlProduto(p.s), pr = precoFinal(p), mc, abrir, f, nome, det, cores = null, tams = [], i, card, corUnica, g, bolas = [], lista = [], gi, ir;
+  if (!href || !pr) { return null; }
+  op = op || {};
+  mc = typeof tgModeloCor === 'function' ? tgModeloCor(p.n) : { modelo: p.n, cor: '' };
+  abrir = function (no, alvo) {
+    try {
+      if (typeof op.aoAbrir === 'function') { op.aoAbrir(no, alvo || p); }
+      else if (op.conjunto && typeof tgQuickViewConjunto === 'function') { tgQuickViewConjunto(op.conjunto, { aoFechar: function () { try { if (no && no.focus) { no.focus(); } } catch (e) {} }, origem: op.secao || 'conjuntos' }); }
+      else { tgRgAbrirQuickView(alvo || p, op.irmaos || (tgGrupoDe(op.mapa, p) || {}).irmaos || [p], null, no); }
+      emitir('tg_busca_tapete_click', { position: op.posicao || 0, reason: op.secao || '' });
+    } catch (e) {}
+  };
+  // so o botao "Detalhes da peca" abre o modal (Danilo, 24/11); foto, nome e bolinhas sao so informacao
+  f = el('div', { 'class': 'tg-busca-hc-foto', 'aria-hidden': 'true' }, [foto(p, 'tg-busca-thumb') || el('span', { 'class': 'tg-busca-thumb' })]);
+  nome = el('p', { 'class': 'tg-busca-hc-nome' }, [p.n]);
+  det = el('button', { type: 'button', 'class': 'tg-busca-hc-det', 'aria-label': 'Detalhes da peça: ' + p.n }, ['Detalhes da peça']);
+  [det].forEach(function (b) {
+    b.addEventListener('click', function () { abrir(b); });
+    b.addEventListener('pointerdown', function () { tgRgPrefetch(p); if (op.conjunto) { tgRgPrefetch(op.conjunto.cima); tgRgPrefetch(op.conjunto.baixo); } });
+  });
+  // cores: peca do conjunto mostra so a cor do par; peca avulsa mostra as cores do modelo (cada bolinha abre aquela cor)
+  g = op.conjunto ? null : tgGrupoDe(op.mapa, p);
+  if (g && Array.isArray(g.irmaos)) {
+    for (i = 0; i < g.irmaos.length; i++) {
+      ir = g.irmaos[i]; gi = tgGrupoDe(op.mapa, ir);
+      if (ir && urlProduto(ir.s) && gi && gi.cor && tgDisponivel(ir)) { lista.push({ item: ir, cor: gi.cor }); }
+    }
+  }
+  if (lista.length >= 2) {
+    for (i = 0; i < lista.length && i < TG_PG_BOLINHAS_MAX; i++) {
+      bolas.push(el('span', { 'class': 'tg-busca-bolinha' + (lista[i].item === p ? ' tg-busca-bolinha-atual' : ''), 'data-cor': tgCorSlug(lista[i].cor), 'aria-hidden': 'true' }));
+    }
+    if (lista.length > TG_PG_BOLINHAS_MAX) { bolas.push(el('span', { 'class': 'tg-busca-bolinha-mais', 'aria-label': 'Mais ' + (lista.length - TG_PG_BOLINHAS_MAX) + ' cores' }, ['+' + (lista.length - TG_PG_BOLINHAS_MAX)])); }
+    cores = el('div', { 'class': 'tg-busca-cores tg-busca-hc-cores', role: 'img', 'aria-label': 'Cores: ' + lista.map(function (x) { return x.cor; }).join(', ') }, bolas);
+  } else if (mc.cor) {
+    corUnica = el('div', { 'class': 'tg-busca-cores tg-busca-hc-cores' }, [el('span', { 'class': 'tg-busca-bolinha tg-busca-bolinha-atual', 'data-cor': tgCorSlug(mc.cor), 'aria-hidden': 'true' }), el('span', { 'class': 'tg-busca-hc-cor' }, [mc.cor])]);
+    cores = corUnica;
+  }
+  if (Array.isArray(p.sz)) { for (i = 0; i < p.sz.length && i < 10; i++) { if (typeof p.sz[i] === 'string' && p.sz[i]) { tams.push(el('span', { 'class': 'tg-busca-hc-tam' }, [p.sz[i]])); } } }
+  card = el('div', { 'class': 'tg-busca-hc' + (op.conjunto ? ' tg-busca-hc-conj' : '') }, [
+    f,
+    el('div', { 'class': 'tg-busca-hc-inf' }, [
+      nome,
+      el('div', { 'class': 'tg-busca-preco tg-busca-hc-preco' }, [el('strong', null, [reais(pr.final)]), pr.de ? el('s', { 'class': 'tg-busca-de' }, [reais(pr.de)]) : null]),
+      cores,
+      tams.length ? el('div', { 'class': 'tg-busca-hc-tams', role: 'img', 'aria-label': 'Tamanhos em estoque: ' + p.sz.join(', ') }, tams) : null,
+      det
+    ])
+  ]);
+  return card;
+}
+// Um conjunto = as duas pecas em cards separados (Danilo, 24/11): tocar em qualquer uma abre o modal com as duas.
+function tgHConjunto(c, pos, secao) {
+  var a = tgHCard(c.cima, { conjunto: c, posicao: pos, secao: secao }), b = tgHCard(c.baixo, { conjunto: c, posicao: pos, secao: secao });
+  if (!a || !b) { return null; }
+  return el('div', { 'class': 'tg-busca-hc-par', role: 'group', 'aria-label': 'Conjunto ' + (c.cor || '') }, [a, b]);
+}
+
+// ---------------------------------------------------------------- pagina de Conjuntos (/search/?q=conjuntos)
+// Os pares do Recom em cards separados, com filtro de Tamanho (as duas pecas tem o tamanho) e de Cor (a cor do par). Devolve true se montou.
+var TG_CJ_LOTE = 8;
+function tgCjMontar(lista) {
+  var destino = tgRgDestino(), raiz, grade, mais, barra, ativos = null, tam = null, cor = null, menus = [], est = { tamanhos: [], cores: [], mostrados: 0, atual: lista }, voce, vazio, i, n2, opCores = [];
+  if (!destino || !lista.length) { return false; }
+  grade = el('div', { 'class': 'tg-busca-hc-lista' });
+  mais = el('button', { type: 'button', 'class': 'tg-busca-mais tg-busca-oculto' }, ['Ver mais conjuntos']);
+  vazio = el('div', { 'class': 'tg-busca-vazio tg-busca-oculto', role: 'status' });
+  voce = el('h1', { 'class': 'tg-busca-voce' }, ['Você está buscando por: ', el('strong', null, ['Conjuntos'])]);
+  function corDo(c) { var f = typeof tgFamiliaCor === 'function' ? tgFamiliaCor(c.cima) : null; return f ? f : null; }
+  (function () {
+    var vistos = {}, j, f;
+    for (j = 0; j < lista.length; j++) { f = corDo(lista[j]); if (f && !vistos[f.chave]) { vistos[f.chave] = true; opCores.push({ valor: f.chave, rotulo: f.rotulo }); } }
+  })();
+  function filtrar() {
+    return lista.filter(function (c) {
+      var f;
+      if (est.tamanhos.length && typeof tgFiltrar === 'function' && !(tgFiltrar([c.cima], { tamanho: est.tamanhos }).length && tgFiltrar([c.baixo], { tamanho: est.tamanhos }).length)) { return false; }
+      if (est.cores.length) { f = corDo(c); if (!f || est.cores.indexOf(f.chave) < 0) { return false; } }
+      return true;
+    });
+  }
+  function lote() {
+    var fim = Math.min(est.atual.length, est.mostrados + TG_CJ_LOTE), p, no;
+    for (p = est.mostrados; p < fim; p++) { no = tgHConjunto(est.atual[p], p + 1, 'conjuntos'); if (no) { grade.appendChild(no); } }
+    est.mostrados = fim;
+    if (fim < est.atual.length) { mais.classList.remove('tg-busca-oculto'); } else { mais.classList.add('tg-busca-oculto'); }
+  }
+  function desenhar() {
+    var limpar;
+    while (grade.firstChild) { grade.removeChild(grade.firstChild); }
+    est.atual = filtrar(); est.mostrados = 0;
+    lote();
+    while (vazio.firstChild) { vazio.removeChild(vazio.firstChild); }
+    if (!est.atual.length) {
+      limpar = el('button', { type: 'button', 'class': 'tg-busca-chip tg-busca-chip-ativo' }, ['Limpar filtros']);
+      limpar.addEventListener('click', function () { est.tamanhos = []; est.cores = []; desenhar(); });
+      vazio.appendChild(el('p', null, ['Nenhum conjunto com essa combinação de filtros.']));
+      vazio.appendChild(limpar);
+      vazio.classList.remove('tg-busca-oculto');
+    } else { vazio.classList.add('tg-busca-oculto'); }
+    if (tam) { tgTexto(tam.botao, est.tamanhos.length ? 'Tamanho (' + est.tamanhos.length + ')' : 'Tamanho'); tam.pintar(null, est.tamanhos); }
+    if (cor) { tgTexto(cor.botao, est.cores.length ? 'Cor (' + est.cores.length + ')' : 'Cor'); cor.pintar(null, est.cores); }
+    pintarAtivos();
+  }
+  // filtros aplicados: microchips na barra grudada + Limpar busca (mesmo padrao da pagina de resultados)
+  function pintarAtivos() {
+    var itens = [], lim;
+    if (!ativos) { return; }
+    while (ativos.firstChild) { ativos.removeChild(ativos.firstChild); }
+    function micro(texto, tirar) {
+      var b = el('button', { type: 'button', 'class': 'tg-busca-micro', 'aria-label': 'Tirar o filtro ' + texto }, [texto, el('span', { 'class': 'tg-busca-micro-x', 'aria-hidden': 'true' }, ['×'])]);
+      b.addEventListener('click', function () { try { tirar(); desenhar(); } catch (e) {} });
+      itens.push(b);
+    }
+    est.tamanhos.forEach(function (v) { micro('Tamanho ' + v, function () { alternar(est.tamanhos, v); }); });
+    est.cores.forEach(function (v) { var r = v, k; for (k = 0; k < opCores.length; k++) { if (opCores[k].valor === v) { r = opCores[k].rotulo; } } micro(r, function () { alternar(est.cores, v); }); });
+    if (!itens.length) { ativos.classList.add('tg-busca-oculto'); return; }
+    lim = el('button', { type: 'button', 'class': 'tg-busca-limpar-busca' }, ['Limpar busca']);
+    lim.addEventListener('click', function () { try { est.tamanhos = []; est.cores = []; desenhar(); } catch (e) {} });
+    ativos.appendChild(el('div', { 'class': 'tg-busca-ativos-lista' }, itens));
+    ativos.appendChild(lim);
+    ativos.classList.remove('tg-busca-oculto');
+  }
+  function alternar(l, v) { var p = l.indexOf(v); if (p >= 0) { l.splice(p, 1); } else { l.push(v); } }
+  mais.addEventListener('click', function () { try { lote(); } catch (e) {} });
+  tam = tgPgMenu('Tamanho', tgPgOpcoesTamanho(), [], function (v) { alternar(est.tamanhos, v); desenhar(); try { emitir('tg_busca_filtro_tamanho', { reason: est.tamanhos.join(','), page_type: 'conjuntos' }); } catch (e) {} }, false, true);
+  menus.push(tam);
+  if (opCores.length > 1) { cor = tgPgMenu('Cor', opCores, [], function (v) { alternar(est.cores, v); desenhar(); try { emitir('tg_busca_filtro_cor', { reason: est.cores.join(','), page_type: 'conjuntos' }); } catch (e) {} }, true, true); menus.push(cor); }
+  ativos = el('div', { 'class': 'tg-busca-ativos tg-busca-oculto', role: 'group', 'aria-label': 'Filtros aplicados' });
+  barra = el('div', { 'class': 'tg-busca-barra' }, [el('div', { 'class': 'tg-busca-barra-linha' }, [tam.no, el('span', { 'class': 'tg-busca-barra-espaco' }), cor ? cor.no : null]), ativos]);
+  document.addEventListener('click', function (ev) { var j; try { for (j = 0; j < menus.length; j++) { if (!menus[j].no.contains(ev.target)) { menus[j].fechar(); } } } catch (e) {} });
+  raiz = el('section', { id: 'tg-busca-resultados', 'class': 'tg-busca-pagina tg-busca-pagina-conj', 'aria-label': 'Conjuntos' }, [tgConselheira(), voce, el('p', { 'class': 'tg-busca-cj-sub' }, ['Peça de cima e peça de baixo da mesma cor, vendidas separadamente.']), barra, grade, vazio, mais]);
+  injetarEstilos();
+  desenhar();
+  destino.insertBefore(raiz, destino.firstChild || null);
+  tgPgTopoBarra(raiz);
+  for (i = 0; i < ['.js-product-table', '.js-load-more', '#js-infinite-scroll-spinner', '[data-store="page-title"]'].length; i++) {
+    n2 = document.querySelector(['.js-product-table', '.js-load-more', '#js-infinite-scroll-spinner', '[data-store="page-title"]'][i]);
+    if (n2) { n2.classList.add('tg-busca-nativo-oculto'); }
+  }
+  try { n2 = document.querySelector('.category-body h2'); if (n2 && /exibindo resultados/i.test(n2.textContent || '')) { n2.classList.add('tg-busca-nativo-oculto'); } } catch (e) {}
+  emitir('tg_busca_pagina_view', { results_count: lista.length, page_type: 'conjuntos' });
+  return true;
 }
 
 function tgPgOrdenar(lista, modo, handles) {
@@ -4405,7 +4702,7 @@ function tgPgMenu(rotuloBotao, opcoes, atual, aoEscolher, direita, multi) {
 // Monta a pagina de resultados. Devolve true se montou (so entao a lista nativa so some).
 // Filtros que valem juntos: chip de categoria/ocasiao (troca a lista-base pela busca do chip), Novidades, tamanhos (varios) e cores (varias).
 function tgPgMontar(q, cat, res) {
-  var itens = [], i, destino, raiz, nativo, mapa, selos = res.selos, destaque, est, grade, mais, barra, menus = [], ordem = null, tam = null, cor = null, togg, tg1, tg2, chipsLinha, filhos, aviso = null, vazio, bases = {}, voce, grupoQ = typeof tgGrupoDaBusca === 'function' ? tgGrupoDaBusca(q) : '';
+  var conjOk = false, verNov, ativos = null, itens = [], i, destino, raiz, nativo, mapa, selos = res.selos, destaque, est, grade, mais, barra, menus = [], ordem = null, tam = null, cor = null, togg, tg1, tg2, chipsLinha, filhos, aviso = null, vazio, bases = {}, voce, grupoQ = typeof tgGrupoDaBusca === 'function' ? tgGrupoDaBusca(q) : '';
   for (i = 0; i < res.results.length; i++) { if (urlProduto(res.results[i].s) && precoFinal(res.results[i])) { itens.push(res.results[i]); } }
   if (!itens.length) { return false; }
   destino = tgRgDestino();
@@ -4415,6 +4712,7 @@ function tgPgMontar(q, cat, res) {
   est = { ordem: 'relevancia', tamanhos: [], cores: [], base: '', grupo: '', chip: '', novidades: false, handles: null, um: false, mostrados: 0, atual: itens };
   grade = el('div', { 'class': 'tg-busca-grade' });
   mais = el('button', { type: 'button', 'class': 'tg-busca-mais tg-busca-oculto' }, ['Ver mais peças']);
+  verNov = el('a', { 'class': 'tg-busca-mais tg-busca-ver-nov tg-busca-oculto', href: typeof TG_NOVIDADES_CATEGORIA === 'string' ? TG_NOVIDADES_CATEGORIA : '/novidades/' }, ['Ver Novidades']);
   voce = el('h1', { 'class': 'tg-busca-voce' });
   vazio = el('div', { 'class': 'tg-busca-vazio tg-busca-oculto', role: 'status' });
 
@@ -4460,7 +4758,18 @@ function tgPgMontar(q, cat, res) {
     }
     return out;
   }
-  function lista() { return tgPgOrdenar(tgPgFiltrar(soNovidades(baseItens()), est.tamanhos, est.cores), est.ordem, est.handles); }
+  // Novidades (filtro exclusivo, so combina com Tamanho e Cor): na ordem da categoria Novidades
+  function lista() { return tgPgOrdenar(tgPgFiltrar(soNovidades(baseItens()), est.tamanhos, est.cores), est.novidades ? 'lancamentos' : est.ordem, est.handles); }
+  // Novidades sem grupo (Danilo, 24/11): 2 Vestidos, 2 Blusas e 2 Calcas, uma secao por grupo, e o botao Ver Novidades
+  function secoesNov(l) {
+    var out = [], gs = ['vestidos', 'blusas', 'calcas'], j, its;
+    if (typeof tgGrupoDoItem !== 'function' || typeof TG_GRUPOS === 'undefined') { return null; }
+    for (j = 0; j < gs.length; j++) {
+      its = l.filter(function (it) { return tgGrupoDoItem(it) === gs[j]; }).slice(0, 2);
+      if (its.length) { out.push({ titulo: TG_GRUPOS[gs[j]].rotulo, itens: its }); }
+    }
+    return out.length ? out : null;
+  }
   function lote() {
     var fim = Math.min(est.atual.length, est.mostrados + TG_PG_LOTE), c, p;
     for (p = est.mostrados; p < fim; p++) {
@@ -4488,17 +4797,20 @@ function tgPgMontar(q, cat, res) {
   }
   // "Você está buscando por: Vestidos" (ou o que foi digitado, ou grupo + chip)
   function pintarTitulo() {
-    var g = gAtivo(), rot, c, j, ocas;
+    var g = gAtivo(), rot, c, j, ocas, pre;
     if (est.chip && g) { c = tgChipDoGrupo(g, est.chip); rot = TG_GRUPOS[g].rotulo + (c ? ' · ' + c.rotulo : ''); }
     else if (est.grupo) { rot = TG_GRUPOS[est.grupo].rotulo; }
     else if (est.base) {
       rot = tituloCaso(q);
       ocas = typeof TG_CHIPS_OCASIAO !== 'undefined' && Array.isArray(TG_CHIPS_OCASIAO) ? TG_CHIPS_OCASIAO : [];
       for (j = 0; j < ocas.length; j++) { if (ocas[j] && ocas[j].consulta === est.base) { rot = ocas[j].rotulo; } }
-    } else { rot = tituloCaso(q); }
-    if (est.novidades) { rot += ' · Novidades'; }
+    } else if (grupoQ && normalizeText(q).split(' ').length === 1) { rot = TG_GRUPOS[grupoQ].rotulo; } else { rot = tituloCaso(q); }
+    // titulo da ordenacao (Danilo, 24/11): "Lançamentos em Vestidos", "Melhores Ofertas em Vestidos"; Novidades: "Novidades em Vestidos"
+    pre = 'Você está buscando por: ';
+    if (est.novidades) { pre = 'Novidades em '; }
+    else if (est.ordem !== 'relevancia') { for (j = 0; j < TG_PG_ORDENS.length; j++) { if (TG_PG_ORDENS[j][0] === est.ordem) { pre = TG_PG_ORDENS[j][1] + ' em '; } } }
     while (voce.firstChild) { voce.removeChild(voce.firstChild); }
-    voce.appendChild(document.createTextNode('Você está buscando por: '));
+    voce.appendChild(document.createTextNode(pre));
     voce.appendChild(el('strong', null, [rot]));
   }
   function rotuloContado(base, n) { return n ? base + ' (' + n + ')' : base; }
@@ -4507,7 +4819,7 @@ function tgPgMontar(q, cat, res) {
     while (grade.firstChild) { grade.removeChild(grade.firstChild); }
     est.atual = lista();
     est.mostrados = 0;
-    est.secoes = est.ordem === 'best-sellers' && !gAtivo() ? secoesBest(est.atual) : null;
+    est.secoes = est.novidades && !gAtivo() ? secoesNov(est.atual) : (est.ordem === 'best-sellers' && !gAtivo() ? secoesBest(est.atual) : null);
     if (est.secoes) {
       // uma secao por categoria, sem paginacao (cada uma ja traz as mais vendidas)
       est.secoes.forEach(function (sec) {
@@ -4521,10 +4833,10 @@ function tgPgMontar(q, cat, res) {
       est.mostrados = est.atual.length;
       mais.classList.add('tg-busca-oculto');
     } else {
-      if (est.ordem === 'best-sellers' && gAtivo() && est.atual.length) { grade.appendChild(el('h2', { 'class': 'tg-busca-grade-titulo' }, ['Mais Vendidos em ' + TG_GRUPOS[gAtivo()].rotulo])); }
       lote();
     }
     pintarTitulo();
+    if (est.novidades && est.atual.length) { verNov.classList.remove('tg-busca-oculto'); } else { verNov.classList.add('tg-busca-oculto'); }
     // sem peca na combinacao: mensagem com saida
     while (vazio.firstChild) { vazio.removeChild(vazio.firstChild); }
     if (!est.atual.length) {
@@ -4535,6 +4847,7 @@ function tgPgMontar(q, cat, res) {
       vazio.classList.remove('tg-busca-oculto');
     } else { vazio.classList.add('tg-busca-oculto'); }
     chips();
+    pintarAtivos();
     if (ordem) { ordem.pintar(null, est.ordem); }
     if (tam) { tgTexto(tam.botao, rotuloContado('Tamanho', est.tamanhos.length)); tam.pintar(null, est.tamanhos); }
     if (cor) {
@@ -4585,10 +4898,11 @@ function tgPgMontar(q, cat, res) {
         partes = v.split(',');
         for (j = 0; j < partes.length && j < 8; j++) { if (/^[a-z0-9 \-]{1,40}$/.test(partes[j]) && est.cores.indexOf(partes[j]) < 0) { est.cores.push(partes[j]); } }
       }
-      if (sp.get('tg_nov') === '1') { est.novidades = true; }
+      // Novidades pelo link: so liga quando a lista das Novidades chegar (antes disso a tela mostraria pecas que nao sao novidades)
+      if (sp.get('tg_nov') === '1') { est.novPend = true; est.chip = ''; est.base = ''; est.ordem = 'relevancia'; }
       // cor que nao existe nessa busca some do link (nada de chip fantasma nem lista vazia por link editado)
       if (est.cores.length && typeof tgPgOpcoesCor === 'function') { validas = tgPgOpcoesCor(baseItens()).map(function (o) { return o.valor; }); est.cores = est.cores.filter(function (c) { return validas.indexOf(c) >= 0; }); }
-      if (est.ordem === 'lancamentos' || est.novidades) { precisaNov = true; }
+      if (est.ordem === 'lancamentos' || est.novPend) { precisaNov = true; }
     } catch (e) {}
     return precisaNov;
   }
@@ -4598,8 +4912,8 @@ function tgPgMontar(q, cat, res) {
 
   function alternar(lista, v) { var p = lista.indexOf(v); if (p >= 0) { lista.splice(p, 1); } else { lista.push(v); } }
   function escolherOrdem(v) {
-    function aplicar() { est.ordem = v; if (ordem) { ordem.pintar(null, v); } desenhar(); try { emitir('tg_busca_ordenar', { reason: v, results_count: est.atual.length }); } catch (e) {} }
-    if (v === 'lancamentos' && !est.handles) { tgPgNovidades().then(function (h) { est.handles = h; aplicar(); }); return; }
+    function aplicar() { est.ordem = v; if (v !== 'relevancia') { est.novidades = false; } if (ordem) { ordem.pintar(null, v); } desenhar(); try { emitir('tg_busca_ordenar', { reason: v, results_count: est.atual.length }); } catch (e) {} }
+    if (v === 'lancamentos' && !(est.handles && est.handles.length)) { tgPgNovidades().then(function (h) { est.handles = h; aplicar(); }); return; }
     aplicar();
   }
   function escolherTamanho(v) {
@@ -4614,6 +4928,7 @@ function tgPgMontar(q, cat, res) {
   }
   function escolherBase(consulta) {
     est.base = est.base === consulta ? '' : consulta;
+    est.novidades = false;
     desenhar();
     try { emitir('tg_busca_chip', { reason: est.base || 'limpar', results_count: est.atual.length }); } catch (e) {}
   }
@@ -4629,15 +4944,50 @@ function tgPgMontar(q, cat, res) {
   }
   function escolherChipGrupo(id) {
     est.chip = est.chip === id ? '' : id;
+    est.novidades = false;
     desenhar();
     try { emitir('tg_busca_chip', { reason: (gAtivo() || '') + ':' + (est.chip || 'limpar'), results_count: est.atual.length }); } catch (e) {}
   }
   function escolherNovidades(botao) {
-    function aplicar() { est.novidades = !est.novidades; desenhar(); try { emitir('tg_busca_chip', { reason: est.novidades ? 'novidades' : 'limpar', results_count: est.atual.length }); } catch (e) {} }
-    if (!est.handles) { botao.setAttribute('aria-busy', 'true'); tgPgNovidades().then(function (h) { est.handles = h; botao.removeAttribute('aria-busy'); if (h.length) { aplicar(); } }); return; }
+    function aplicar() { est.novidades = !est.novidades; if (est.novidades) { est.chip = ''; est.base = ''; est.ordem = 'relevancia'; } desenhar(); try { emitir('tg_busca_chip', { reason: est.novidades ? 'novidades' : 'limpar', results_count: est.atual.length }); } catch (e) {} }
+    if (!(est.handles && est.handles.length)) { botao.setAttribute('aria-busy', 'true'); tgPgNovidades().then(function (h) { est.handles = h; botao.removeAttribute('aria-busy'); if (h.length) { aplicar(); } }); return; }
     if (est.handles.length) { aplicar(); }
   }
 
+  // Filtros aplicados (Danilo, 24/11): microchips discretos na barra que gruda no topo, cada um com x para tirar, e "Limpar busca".
+  // So aparece com algum filtro; acompanha a rolagem junto com a barra.
+  function pintarAtivos() {
+    var itens = [], opC, g = gAtivo(), c, lim, rot, j, todos;
+    if (!ativos) { return; }
+    while (ativos.firstChild) { ativos.removeChild(ativos.firstChild); }
+    function micro(texto, tirar) {
+      var b = el('button', { type: 'button', 'class': 'tg-busca-micro', 'aria-label': 'Tirar o filtro ' + texto }, [texto, el('span', { 'class': 'tg-busca-micro-x', 'aria-hidden': 'true' }, ['×'])]);
+      b.addEventListener('click', function () { try { tirar(); } catch (e) {} });
+      itens.push(b);
+    }
+    if (est.grupo && !grupoQ && TG_GRUPOS[est.grupo]) { micro(TG_GRUPOS[est.grupo].rotulo, function () { voltarTodas(); }); }
+    if (est.chip && g && typeof tgChipDoGrupo === 'function') { c = tgChipDoGrupo(g, est.chip); if (c) { micro(c.rotulo, function () { escolherChipGrupo(est.chip); }); } }
+    if (est.base) {
+      rot = est.base;
+      todos = [].concat(typeof TG_CHIPS_EM_ALTA !== 'undefined' ? TG_CHIPS_EM_ALTA : [], typeof TG_CHIPS_OCASIAO !== 'undefined' ? TG_CHIPS_OCASIAO : []);
+      for (j = 0; j < todos.length; j++) { if (todos[j] && todos[j].consulta === est.base) { rot = todos[j].rotulo; } }
+      micro(rot, function () { escolherBase(est.base); });
+    }
+    if (est.novidades) { micro('Novidades', function () { est.novidades = false; desenhar(); }); }
+    est.tamanhos.forEach(function (t) { micro('Tamanho ' + t, function () { escolherTamanho(t); }); });
+    opC = est.cores.length ? tgPgOpcoesCor(baseItens()) : [];
+    est.cores.forEach(function (v) {
+      var r = v, k;
+      for (k = 0; k < opC.length; k++) { if (opC[k].valor === v) { r = opC[k].rotulo; } }
+      micro(r, function () { escolherCor(v); });
+    });
+    if (!itens.length) { ativos.classList.add('tg-busca-oculto'); return; }
+    lim = el('button', { type: 'button', 'class': 'tg-busca-limpar-busca' }, ['Limpar busca']);
+    lim.addEventListener('click', function () { try { limparTudo(); emitir('tg_busca_chip', { reason: 'limpar' }); } catch (e) {} });
+    ativos.appendChild(el('div', { 'class': 'tg-busca-ativos-lista' }, itens));
+    ativos.appendChild(lim);
+    ativos.classList.remove('tg-busca-oculto');
+  }
   // linha de chips: filtros ativos (tirar ao clicar) + categorias, ocasioes e Novidades (botoes que combinam com tamanho e cor)
   chipsLinha = el('div', { 'class': 'tg-busca-chips tg-busca-chips-linha' });
   function chipBotao(rotulo, ativo, aoClicar, ariaTirar) {
@@ -4650,13 +5000,8 @@ function tgPgMontar(q, cat, res) {
   function chips() {
     var cats = typeof TG_CHIPS_EM_ALTA !== 'undefined' && Array.isArray(TG_CHIPS_EM_ALTA) ? TG_CHIPS_EM_ALTA : [], ocas = typeof TG_CHIPS_OCASIAO !== 'undefined' && Array.isArray(TG_CHIPS_OCASIAO) ? TG_CHIPS_OCASIAO : [], j, c, ordemChips = [], nov = null, opCor, gcs;
     while (chipsLinha.firstChild) { chipsLinha.removeChild(chipsLinha.firstChild); }
-    est.tamanhos.forEach(function (t) { chipsLinha.appendChild(chipBotao('Tamanho ' + rotuloTam(t) + ' ×', true, function () { escolherTamanho(t); }, 'Tirar o filtro de tamanho ' + rotuloTam(t))); });
+    // os filtros aplicados (Tamanho, Cor, Novidades...) ficam na linha de microchips da barra grudada (pintarAtivos), nao aqui
     opCor = typeof tgPgOpcoesCor === 'function' ? tgPgOpcoesCor(baseItens()) : [];  // rotulos: lista completa
-    est.cores.forEach(function (v) {
-      var rot = v, k;
-      for (k = 0; k < opCor.length; k++) { if (opCor[k].valor === v) { rot = opCor[k].rotulo; } }
-      chipsLinha.appendChild(chipBotao('Cor ' + rot + ' ×', true, function () { escolherCor(v); }, 'Tirar o filtro de cor ' + rot));
-    });
     // dentro de um grupo (Vestidos, Blusas, Calças), pela busca ou por chip: os chips passam a ser os do grupo
     gcs = null;
     try { if (gAtivo() && typeof tgChipsDoGrupo === 'function') { gcs = tgChipsDoGrupo(cat, gAtivo()); } } catch (e) { gcs = null; }
@@ -4680,6 +5025,7 @@ function tgPgMontar(q, cat, res) {
       var gid = typeof tgGrupoDaBusca === 'function' ? tgGrupoDaBusca(o.consulta) : '';
       chipsLinha.appendChild(chipBotao(o.rotulo, est.base === o.consulta, function () { if (gid) { entrarGrupo(gid); } else { escolherBase(o.consulta); } }));
     });
+    if (conjOk) { chipsLinha.appendChild(el('a', { 'class': 'tg-busca-chip', href: urlBusca('conjuntos') }, ['Conjuntos'])); }
     if (nov) { chipsLinha.appendChild(chipBotao(nov.rotulo, est.novidades, function (b) { escolherNovidades(b); })); }
     if (!chipsLinha.firstChild) { chipsLinha.classList.add('tg-busca-oculto'); } else { chipsLinha.classList.remove('tg-busca-oculto'); }
   }
@@ -4706,7 +5052,8 @@ function tgPgMontar(q, cat, res) {
   tg1.addEventListener('click', function () { try { colunas(true); } catch (e) {} });
   tg2.addEventListener('click', function () { try { colunas(false); } catch (e) {} });
   togg = el('div', { 'class': 'tg-busca-togg', role: 'group', 'aria-label': 'Tamanho da grade' }, [tg1, tg2]);
-  barra = el('div', { 'class': 'tg-busca-barra' }, [el('div', { 'class': 'tg-busca-barra-linha' }, [ordem ? ordem.no : null, el('span', { 'class': 'tg-busca-barra-espaco' }), tam ? tam.no : null, cor ? cor.no : null, togg])]);
+  ativos = el('div', { 'class': 'tg-busca-ativos tg-busca-oculto', role: 'group', 'aria-label': 'Filtros aplicados' });
+  barra = el('div', { 'class': 'tg-busca-barra' }, [el('div', { 'class': 'tg-busca-barra-linha' }, [ordem ? ordem.no : null, el('span', { 'class': 'tg-busca-barra-espaco' }), tam ? tam.no : null, cor ? cor.no : null, togg]), ativos]);
 
   // fecha os menus ao clicar fora ou com Esc (um unico ouvinte por pagina)
   document.addEventListener('click', function (ev) {
@@ -4721,14 +5068,17 @@ function tgPgMontar(q, cat, res) {
   if (res.tamanho) { aviso = tgAcAviso(res.tamanho); }
   else if (!grupoQ && !tgPgCasaNome(q, itens.slice(0, 6))) { aviso = el('div', { 'class': 'tg-busca-aviso-nome', role: 'status' }, ['Não encontramos “' + String(q).trim().slice(0, 60) + '”. Veja peças com nome parecido:']); }
   var precisaNov = urlLer();
-  filhos = [tgConselheira(), voce, aviso, barra, chipsLinha, grade, vazio, mais];
+  // chips acima da barra (Danilo, 24/11): ficam a vista, com respiro, e a barra (Ordenar, Tamanho, Cor, grade) gruda no topo ao rolar
+  filhos = [tgConselheira(), voce, aviso, chipsLinha, barra, grade, vazio, mais, verNov];
   raiz = el('section', { id: 'tg-busca-resultados', 'class': 'tg-busca-pagina', 'aria-label': 'Resultados da busca' }, filhos);
   injetarEstilos();
   desenhar();
   destino.insertBefore(raiz, destino.firstChild || null);
   tgPgTopoBarra(raiz);
+  // chip Conjuntos (so com a lista do Recom no ar e com pelo menos um par em estoque)
+  try { tgConjuntosLista(cat).then(function (l) { if (l.length && !gAtivo()) { conjOk = true; chips(); } }); } catch (e) {}
   if (precisaNov) {
-    tgPgNovidades().then(function (h) { est.handles = h; if (!h.length) { est.novidades = false; } desenhar(); });
+    tgPgNovidades().then(function (h) { est.handles = h; if (est.novPend && h.length) { est.novidades = true; } est.novPend = false; desenhar(); });
   }
   if (TG_PG_ESCONDE_NATIVO) {
     nativo = document.querySelector('.js-product-table');
@@ -4757,18 +5107,38 @@ function tgPgCasaNome(q, itens) {
   return false;
 }
 
-// Altura do cabecalho fixo do tema (fixo ou grudado no topo), para a barra de filtros parar logo abaixo dele. Sem cabecalho fixo, fica em 0.
+// Barra grudada no topo (v12, 24/11). Dois problemas do tema: (1) a .category-body tem overflow:hidden, que desliga o sticky de quem esta dentro;
+// os pais da nossa pagina passam a overflow visivel (com corte so na horizontal, sem criar rolagem); (2) o cabecalho do tema encolhe ao rolar
+// (84 -> 47 px no celular): o topo da barra acompanha a borda de baixo do cabecalho a cada quadro de rolagem. Sem cabecalho fixo, fica em 0.
 function tgPgTopoBarra(raiz) {
+  var hs, pedido = 0, ultimo = -1, barra = null;
   try {
-    var hs = document.querySelectorAll('.js-head-main, header, .head-main'), i, cs, r, h = 0;
-    for (i = 0; i < hs.length; i++) {
-      cs = window.getComputedStyle(hs[i]);
-      if (cs.position !== 'fixed' && cs.position !== 'sticky') { continue; }
-      r = hs[i].getBoundingClientRect();
-      if (r.top <= 1 && r.height > 0 && r.height < 160) { h = Math.max(h, Math.round(r.bottom)); }
-    }
-    if (h > 0) { raiz.style.setProperty('--tgb-barra-topo', h + 'px'); }
+    (function soltar() {
+      var n = raiz.parentElement, cs;
+      while (n && n !== document.body && n !== document.documentElement) {
+        cs = window.getComputedStyle(n);
+        if (/(hidden|clip)/.test(cs.overflowX + ' ' + cs.overflowY) && !/(auto|scroll)/.test(cs.overflowX + ' ' + cs.overflowY)) { n.classList.add('tg-busca-pai-solto'); }
+        n = n.parentElement;
+      }
+    })();
   } catch (e) {}
+  function medir() {
+    var i, cs, r, h = 0;
+    pedido = 0;
+    try {
+      if (!hs) { hs = document.querySelectorAll('.js-head-main, header, .head-main'); }
+      for (i = 0; i < hs.length; i++) {
+        cs = window.getComputedStyle(hs[i]);
+        if (cs.position !== 'fixed' && cs.position !== 'sticky') { continue; }
+        r = hs[i].getBoundingClientRect();
+        if (r.height > 0 && r.height < 200 && r.bottom > 0 && r.top <= 1) { h = Math.max(h, Math.round(r.bottom)); }
+      }
+      if (h !== ultimo && (h > 0 || ultimo > 0)) { ultimo = h; raiz.style.setProperty('--tgb-barra-topo', h + 'px'); if (!barra) { barra = raiz.querySelector('.tg-busca-barra'); } if (barra) { barra.style.top = h + 'px'; } }
+    } catch (e) {}
+  }
+  function pedir() { if (!pedido) { pedido = (window.requestAnimationFrame || function (fn) { return setTimeout(fn, 16); })(medir); } }
+  medir();
+  try { window.addEventListener('scroll', pedir, { passive: true }); window.addEventListener('resize', pedir); } catch (e) {}
 }
 
 // Esgotado nominal pela pagina de resultados: true se montou a tela de esgotada + parecidas.
@@ -4799,6 +5169,15 @@ function ligarResgate() {
   function seguir(cat, esg) {
     var res;
     if (jaMontado()) { return; }
+    // Conjuntos (v12): a pagina de pares do Recom; sem a lista do Recom, segue a busca de sempre
+    if (resultados && tgEhBuscaConjuntos(q)) {
+      return tgConjuntosLista(cat).then(function (l) { if (jaMontado()) { return; } if (l.length && tgCjMontar(l)) { return; } seguirBusca(cat, esg); });
+    }
+    return seguirBusca(cat, esg);
+  }
+  function seguirBusca(cat, esg) {
+    var res;
+    if (jaMontado()) { return; }
     if (resultados) {
       if (esg && tgRgEsgotadoPagina(q, cat, esg)) { return; }
       res = runSearch(q, cat, TG_PG_LIMITE);
@@ -4821,9 +5200,9 @@ function ligarResgate() {
     if (jaMontado() || (!resultados && document.querySelector('.js-product-table'))) { return; }
     // esgotado nominal: baixa o catalogo de esgotados so se a palavra pedida nao casa com nenhuma peca em estoque; falha = resultado de sempre
     if (tgPrecisaEsgotados(q, cat)) {
-      return obterEsgotados().then(function (esg) { seguir(cat, esg); });
+      return obterEsgotados().then(function (esg) { return seguir(cat, esg); });
     }
-    seguir(cat, null);
+    return seguir(cat, null);
   })['catch'](function () {}).then(function () { if (resultados) { devolverNativa(); } tgPend(false); });
 }
 

@@ -84,7 +84,7 @@ var TG_OFERTAS_ROTULOS = {
 var TG_BEST_POR_BUSCA = 3;
 
 // Precedência dos selos (um só por peça): oferta > best seller > últimas peças (t = 4, como sempre).
-var TG_SELO_BEST = 'Best Seller';
+var TG_SELO_BEST = 'Mais Vendidos';
 var TG_SELO_ULTIMAS = 'Últimas Peças';
 
 function tgRotuloCategoria(c) {
@@ -713,7 +713,7 @@ var TG_ESG_SIMILARES = 3;      // similares mostrados no máximo (o Best Seller 
 var TG_ESG_MIN_TAMANHOS = 3;   // grade cheia = pelo menos 3 tamanhos em estoque
 var TG_ESG_FREQ_MAX = 30;      // palavra presente em mais peças esgotadas que isso é genérica demais para pedir esgotado
 var TG_ESG_PALAVRA_MIN = 4;    // palavra da busca com menos letras que isso nunca pede esgotado
-var TG_SELO_ESGOTADO = 'Grade esgotada';
+var TG_SELO_ESGOTADO = 'Tamanho esgotado';
 // Categorias de vitrine ou de sistema que não dizem o tipo da peça (não servem para "mesma categoria" nos similares).
 var TG_ESG_CATEGORIAS_IGNORADAS = ['sold out', 'outlet', 'novidades', 'novidade', 'ultimas oportunidades', 'best sellers', 'best seller', 'geral', 'queridinhos da cindy', 'kits com desconto'];
 var TG_ESG_PALAVRAS_VAZIAS = ['em', 'de', 'da', 'do', 'das', 'dos', 'com', 'sem', 'que', 'um', 'uma', 'e', 'a', 'o', 'para'];
@@ -1629,9 +1629,25 @@ function tgPend(ligar) {
   try { document.documentElement.classList[ligar ? 'add' : 'remove']('tg-busca-pendente'); if (!ligar) { document.documentElement.classList.remove('tg-busca-pg'); } } catch (e) {}
 }
 
+// Foto leve (so a tela do celular liga, em estilos.js): o CDN da loja tem a mesma foto em webp nas larguras 100/320/480/640; a de 1024 em JPG pesa
+// cerca de 99 KB e a de 640 em webp cerca de 20 KB. Se a versao leve falhar, a <img> volta sozinha para a original (uma vez).
+var tgFotoLeve = false;
+function urlImagemLeve(i, larg) {
+  var u = urlImagem(i);
+  if (!u || !tgFotoLeve || !/^(100|320|480|640)$/.test(String(larg))) { return u; }
+  return u.replace(/-1024-1024\.(jpe?g|png|webp)$/i, '-' + larg + '-0.webp');
+}
+function tgFotoReserva(img, original) {
+  if (img && original && img.getAttribute('src') !== original) {
+    img.addEventListener('error', function () { try { if (img.getAttribute('src') !== original) { img.setAttribute('src', original); } } catch (e) {} }, { once: true });
+  }
+  return img;
+}
+
 function foto(item, classe) {
   var src = urlImagem(item && item.i);
-  return src ? el('img', { 'class': classe, src: src, alt: item.n, loading: 'lazy', decoding: 'async' }) : null;
+  if (!src) { return null; }
+  return tgFotoReserva(el('img', { 'class': classe, src: urlImagemLeve(item.i, 640), alt: item.n, loading: 'lazy', decoding: 'async' }), src);
 }
 
 // Pilulas de tamanho: so texto, ate "max". "destaque" (opcional, lista de tamanhos em maiusculas): na busca por tamanho a pilula do tamanho pedido
@@ -1863,6 +1879,9 @@ function tgFrenteCelular() {
  * Fonte, cor do texto, fundo e destaque HERDAM do tema da Talgui (Morelia: --body-font, --heading-font, --main-foreground, --main-background,
  * --accent-color, --label-background), com reserva para quando a variavel do tema nao existe (bancada, testes).
  */
+// A tela do celular usa as fotos leves do CDN (webp 640/320) com volta automatica para a original; o desktop segue com as fotos de sempre.
+try { tgFotoLeve = true; } catch (e) {}
+
 var TG_TOKENS = [
   // tipografia
   ['--tgb-fonte', 'var(--body-font,"Poppins"),"Poppins",Arial,sans-serif'],
@@ -1872,56 +1891,56 @@ var TG_TOKENS = [
   ['--tgb-cor-texto-suave', '#6f6a64'],
   ['--tgb-cor-fundo', 'var(--main-background,#ffffff)'],
   ['--tgb-cor-fundo-suave', '#f5f2ed'],
-  ['--tgb-cor-borda', '#e4dfd8'],
+  ['--tgb-cor-borda', '#d6d0c8'],
   ['--tgb-cor-destaque', 'var(--accent-color,#000000)'],
   ['--tgb-cor-destaque-texto', '#ffffff'],
   ['--tgb-cor-promo', 'var(--tgb-cor-texto)'],
   ['--tgb-cor-selo-texto', '#111111'],
-  ['--tgb-cor-selo-oferta', '#ffffff'],
+  ['--tgb-cor-selo-oferta', 'var(--label-background,#c80003)'],
   ['--tgb-cor-selo-best', '#ffffff'],
   ['--tgb-cor-selo-ultimas', '#ffffff'],
   ['--tgb-cor-selo-esgotado', '#ffffff'],
   ['--tgb-cor-sucesso', 'var(--success,#2e8b63)'],
   ['--tgb-cor-erro', 'var(--danger,#c0392b)'],
   // pagina e grade
-  ['--tgb-pad-pagina', '0px'],
-  ['--tgb-pad-card', '8px'],
-  ['--tgb-gap-grade', '7px'],
-  ['--tgb-gap-linha', '13px'],
+  ['--tgb-pad-pagina', '16px'],
+  ['--tgb-pad-card', '0px'],
+  ['--tgb-gap-grade', '9px'],
+  ['--tgb-gap-linha', '24px'],
   ['--tgb-colunas-mobile', '2'],
   ['--tgb-colunas-desktop', '4'],
-  ['--tgb-raio-card', '5px'],
-  ['--tgb-sombra-card', '0 4px 14px rgba(0,0,0,.12)'],
+  ['--tgb-raio-card', '0px'],
+  ['--tgb-sombra-card', 'none'],
   ['--tgb-foto-proporcao', '2 / 3'],
   ['--tgb-foto-ajuste', 'cover'],
   ['--tgb-foto-fundo', '#f1eee9'],
   // nome, preco e selo
-  ['--tgb-nome-tam', '12px'],
-  ['--tgb-nome-peso', '500'],
-  ['--tgb-nome-linhas', '1'],
+  ['--tgb-nome-tam', '13.5px'],
+  ['--tgb-nome-peso', '300'],
+  ['--tgb-nome-linhas', '2'],
   ['--tgb-nome-transformacao', 'none'],
-  ['--tgb-preco-tam', '12.5px'],
+  ['--tgb-preco-tam', '13px'],
   ['--tgb-preco-peso', '400'],
   ['--tgb-preco-de-tam', '11.5px'],
-  ['--tgb-selo-tam', '9px'],
+  ['--tgb-selo-tam', '10px'],
   ['--tgb-selo-raio', '0px'],
   ['--tgb-selo-espaco', '0px'],
   // bolinhas de cor, tamanhos, botao e chips
-  ['--tgb-bolinha-tam', '18px'],
-  ['--tgb-bolinha-gap', '6px'],
-  ['--tgb-tamanho-btn', '22px'],
-  ['--tgb-tamanho-fonte', '10.5px'],
-  ['--tgb-tamanho-gap', '5px'],
+  ['--tgb-bolinha-tam', '22px'],
+  ['--tgb-bolinha-gap', '8px'],
+  ['--tgb-tamanho-btn', '24px'],
+  ['--tgb-tamanho-fonte', '11.5px'],
+  ['--tgb-tamanho-gap', '4px'],
   ['--tgb-tamanho-raio', '0'],
-  ['--tgb-botao-altura', '28px'],
+  ['--tgb-botao-altura', '40px'],
   ['--tgb-botao-raio', '2px'],
   ['--tgb-botao-fonte', '12.5px'],
   ['--tgb-botao-peso', '600'],
   ['--tgb-botao-transformacao', 'uppercase'],
-  ['--tgb-botao-espaco', '0.15em'],
+  ['--tgb-botao-espaco', '0.06em'],
   ['--tgb-chip-tam', '11px'],
   ['--tgb-chip-altura', '28px'],
-  ['--tgb-chip-raio', '936px'],
+  ['--tgb-chip-raio', '2px'],
   ['--tgb-chip-gap', '2px'],
   // overlay de busca
   ['--tgb-z', '99990'],
@@ -1959,7 +1978,7 @@ var TG_COR_TONS = [
 ];
 
 var TG_CSS_BASE = [
-  '.tg-busca-oculto,#tg-busca-overlay.tg-busca-oculto{display:none}',
+  '.tg-busca-oculto,#tg-busca-overlay.tg-busca-oculto{display:none!important}',
   '.tg-busca-sr{position:absolute!important;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}',
   'html.tg-busca-trava,html.tg-busca-trava body{overflow:hidden!important}',
   '.tg-busca-nativo-oculto{display:none!important}',
@@ -1987,8 +2006,10 @@ var TG_CSS_OVERLAY = [
   '#tg-busca-overlay .tg-busca-ov-campo:focus,#tg-busca-overlay .tg-busca-ov-campo:focus-visible{outline:0;box-shadow:none}',
   '.tg-busca-ov-campo::-webkit-search-cancel-button,.tg-busca-ov-campo::-webkit-search-decoration{display:none;-webkit-appearance:none}',
   '.tg-busca-ov-campo::placeholder{color:var(--tgb-cor-texto-suave);opacity:1}',
-  '.tg-busca-ov-btn{display:flex;align-items:center;justify-content:center;flex:0 0 42px;width:42px;height:42px;margin:0;padding:0;border:0;border-radius:50%;background:transparent;color:inherit;font-size:26px;line-height:1;cursor:pointer}',
+  '.tg-busca-ov-btn{display:flex;align-items:center;justify-content:center;flex:0 0 44px;width:44px;height:44px;margin:0;padding:0;border:0;border-radius:50%;background:transparent;color:inherit;font-size:26px;line-height:1;cursor:pointer}',
   '.tg-busca-ov-btn:hover{background:var(--tgb-cor-fundo-suave)}',
+  // voltar: chevron em CSS com o mesmo traco (1,6px) da lupa, no lugar do caractere fino
+  '.tg-busca-ico-voltar{display:block;width:11px;height:11px;margin-left:5px;border-left:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg)}',
   '.tg-busca-ov-corpo{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:0 var(--tgb-pad-pagina) 28px}',
   '#tg-busca-sugestoes{margin:0;background:transparent;border:0;box-shadow:none;max-height:none;overflow:visible}',
   '.tg-busca-secao-titulo{margin:20px 0 8px;font-family:var(--tgb-fonte-titulo);font-size:var(--tgb-ov-titulo-tam);font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--tgb-cor-texto-suave)}',
@@ -2000,6 +2021,8 @@ var TG_CSS_OVERLAY = [
   '.tg-busca-termo-texto strong{font-weight:700}',
   '.tg-busca-recentes{list-style:none;margin:0;padding:0}',
   '.tg-busca-recentes li{display:flex;align-items:center}',
+  '.tg-busca-recentes-topo{display:flex;align-items:baseline;justify-content:space-between;gap:12px}',
+  '.tg-busca-recentes-topo .tg-busca-limpar{padding:6px 0 6px 12px;letter-spacing:0;text-transform:none;font-weight:400}',
   '.tg-busca-limpar{margin:0;padding:6px 0;border:0;background:none;color:var(--tgb-cor-texto-suave);font-size:12px;text-decoration:underline;cursor:pointer}',
   '.tg-busca-banner{margin:12px 0 0;padding:10px 12px;background:var(--tgb-cor-fundo-suave);border-radius:var(--tgb-raio-card);font-size:13px;color:var(--tgb-cor-texto-suave)}',
   '.tg-busca-banner strong,.tg-busca-sugerido{color:var(--tgb-cor-texto);font-weight:700}',
@@ -2010,6 +2033,7 @@ var TG_CSS_OVERLAY = [
   '.tg-busca-info{min-width:0;margin-top:8px}',
   '.tg-busca-meta{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;margin-bottom:6px}',
   '.tg-busca-pilulas{display:flex;flex-wrap:wrap;gap:4px}',
+  '.tg-busca-meta .tg-busca-selo{padding:0;box-shadow:none;background:none;color:var(--tgb-cor-texto-suave);font-size:10px;letter-spacing:.08em}',
   '.tg-busca-pilula{padding:2px 6px;border:1px solid var(--tgb-cor-borda);border-radius:var(--tgb-tamanho-raio);color:var(--tgb-cor-texto-suave);font-size:10px;font-weight:500;line-height:1.3}',
   '.tg-busca-pilula-pedida{border-color:var(--tgb-cor-destaque);background:var(--tgb-cor-destaque);color:var(--tgb-cor-destaque-texto);font-weight:700}',
   '.tg-busca-item-esgotado .tg-busca-thumb{filter:grayscale(1);opacity:.55}',
@@ -2020,7 +2044,7 @@ var TG_CSS_OVERLAY = [
 
 var TG_CSS_CARD = [
   '.tg-busca-thumb{display:block;width:100%;height:auto;aspect-ratio:var(--tgb-foto-proporcao);object-fit:var(--tgb-foto-ajuste);background:var(--tgb-foto-fundo);border-radius:var(--tgb-raio-card)}',
-  '.tg-busca-nome{display:-webkit-box;word-break:break-word;-webkit-box-orient:vertical;-webkit-line-clamp:var(--tgb-nome-linhas);overflow:hidden;margin:0 0 4px;font-size:var(--tgb-nome-tam);font-weight:var(--tgb-nome-peso);line-height:1.3;text-transform:var(--tgb-nome-transformacao)}',
+  '.tg-busca-nome{min-height:calc(var(--tgb-nome-linhas) * 1.3em);display:-webkit-box;word-break:break-word;-webkit-box-orient:vertical;-webkit-line-clamp:var(--tgb-nome-linhas);overflow:hidden;margin:0 0 4px;font-size:var(--tgb-nome-tam);font-weight:var(--tgb-nome-peso);line-height:1.3;text-transform:var(--tgb-nome-transformacao)}',
   '.tg-busca-preco{display:inline-flex;align-items:baseline;flex-wrap:wrap;gap:2px 6px;font-size:var(--tgb-preco-tam)}',
   '.tg-busca-preco strong{font-weight:var(--tgb-preco-peso)}',
   '.tg-busca-preco strong:not(:last-child){color:var(--tgb-cor-promo)}',
@@ -2028,20 +2052,20 @@ var TG_CSS_CARD = [
   '.tg-busca-selo{display:inline-block;padding:5px 8px;box-shadow:0 1px 2px rgba(0,0,0,.12);border-radius:var(--tgb-selo-raio);color:var(--tgb-cor-selo-texto);font-size:var(--tgb-selo-tam);font-weight:600;line-height:1;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap}',
   '.tg-busca-selo-campeao{background:var(--tgb-cor-selo-best)}',
   '.tg-busca-selo-ultimas{background:var(--tgb-cor-selo-ultimas)}',
-  '.tg-busca-selo-oferta{background:var(--tgb-cor-selo-oferta)}',
+  '.tg-busca-selo-oferta{background:var(--tgb-cor-selo-oferta);color:#fff}',
   '.tg-busca-selo-esgotado{background:var(--tgb-cor-selo-esgotado)}',
   '.tg-busca-grade{display:grid;grid-template-columns:repeat(var(--tgb-colunas-mobile),minmax(0,1fr));gap:var(--tgb-gap-linha) var(--tgb-gap-grade);margin:0;padding:0;text-align:left}',
   '.tg-busca-grade.tg-busca-grade-um{grid-template-columns:minmax(0,1fr)}',
   '.tg-busca-card{position:relative;display:flex;flex-direction:column;min-width:0;padding:var(--tgb-pad-card);border-radius:var(--tgb-raio-card);box-shadow:var(--tgb-sombra-card);background:var(--tgb-cor-fundo);color:inherit}',
   '.tg-busca-card-midia{position:relative;display:block}',
-  '.tg-busca-card-midia .tg-busca-selo{position:absolute;left:var(--tgb-selo-espaco);bottom:var(--tgb-selo-espaco);pointer-events:none}',
+  '.tg-busca-card-midia .tg-busca-selo{position:absolute;left:var(--tgb-selo-espaco);bottom:var(--tgb-selo-espaco);max-width:calc(100% - 8px);overflow:hidden;text-overflow:ellipsis;pointer-events:none}',
   '.tg-busca-card-link{display:block;color:inherit;text-decoration:none}',
   '.tg-busca-card-texto{margin-top:10px}',
   '.tg-busca-card-esgotado .tg-busca-thumb{filter:grayscale(1);opacity:.55}',
   '.tg-busca-cores-vazio{visibility:hidden}',
   '.tg-busca-cores{display:flex;align-items:center;flex-wrap:wrap;gap:var(--tgb-bolinha-gap);min-height:var(--tgb-bolinha-tam);margin:10px 0 0}',
   '.tg-busca-bolinha{position:relative;flex:0 0 auto;width:var(--tgb-bolinha-tam);height:var(--tgb-bolinha-tam);margin:0;padding:0;border:1px solid rgba(0,0,0,.2);border-radius:50%;background:#cfcac3;cursor:pointer}',
-  '.tg-busca-bolinha::after{content:"";position:absolute;top:-7px;right:-4px;bottom:-7px;left:-4px}',
+  '.tg-busca-bolinha::after{content:"";position:absolute;top:-11px;right:-3px;bottom:-11px;left:-3px}',
   '.tg-busca-bolinha[data-cor="outro"]{background:conic-gradient(#d9a7b0,#e9d28a,#9ec8a6,#9cb7e0,#d9a7b0)}',
   '.tg-busca-bolinha-atual{box-shadow:0 0 0 2px var(--tgb-cor-fundo),0 0 0 3px var(--tgb-cor-texto)}',
   '.tg-busca-bolinha-esgotada::before{content:"";position:absolute;top:0;right:0;bottom:0;left:0;border-radius:50%;background:linear-gradient(135deg,transparent 45%,rgba(0,0,0,.6) 46%,rgba(0,0,0,.6) 54%,transparent 55%)}',
@@ -2050,7 +2074,7 @@ var TG_CSS_CARD = [
   // tamanhos no padrao da pagina de categoria: abaixo do nome, alinhados a esquerda, quadradinhos de 22px com borda fina, preco depois
   '.tg-busca-tams{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:var(--tgb-tamanho-gap);margin:7px 0 0}',
   '.tg-busca-tam{position:relative;flex:0 0 auto;min-width:var(--tgb-tamanho-btn);height:var(--tgb-tamanho-btn);margin:0;padding:0 3px;display:flex;align-items:center;justify-content:center;border:1px solid #555;border-radius:var(--tgb-tamanho-raio);background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto);font-size:var(--tgb-tamanho-fonte);font-weight:400;text-transform:uppercase;line-height:1;cursor:pointer}',
-  '.tg-busca-tam::after{content:"";position:absolute;top:-4px;right:-3px;bottom:-4px;left:-3px}',
+  '.tg-busca-tam::after{content:"";position:absolute;top:-9px;right:0;bottom:-9px;left:0}',
   '.tg-busca-tam:hover{border-color:var(--tgb-cor-texto)}',
   '.tg-busca-card-preco{display:block;margin-top:8px;color:inherit;text-decoration:none}',
   '.tg-busca-tam[aria-pressed="true"]{border-color:var(--tgb-cor-destaque);background:var(--tgb-cor-destaque);color:var(--tgb-cor-destaque-texto)}',
@@ -2072,7 +2096,7 @@ var TG_CSS_CARD = [
   '.tg-busca-conj-nome{color:inherit;text-decoration:none}',
   '.tg-busca-conj-cor{font-size:11px;color:var(--tgb-cor-texto-suave)}',
   '.tg-busca-add{display:block;width:100%;height:var(--tgb-botao-altura);margin:10px 0 0;padding:0 8px;border:1px solid var(--tgb-cor-destaque);border-radius:var(--tgb-botao-raio);background:var(--tgb-cor-destaque);color:var(--tgb-cor-destaque-texto);font-size:var(--tgb-botao-fonte);font-weight:var(--tgb-botao-peso);letter-spacing:var(--tgb-botao-espaco);text-transform:var(--tgb-botao-transformacao);cursor:pointer}',
-  '.tg-busca-add[aria-disabled="true"]{border-color:var(--tgb-cor-borda);background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto-suave)}',
+  '.tg-busca-add[aria-disabled="true"]{border-color:var(--tgb-cor-texto);background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto)}',
   '.tg-busca-add.tg-busca-add-ok{border-color:var(--tgb-cor-sucesso);background:var(--tgb-cor-sucesso);color:#fff}',
   '.tg-busca-msg{margin:6px 0 0;font-size:11.5px;color:var(--tgb-cor-erro)}',
   '.tg-busca-msg:empty{display:none}',
@@ -2087,6 +2111,7 @@ var TG_CSS_PAGINA = [
   '.tg-busca-pg-titulo{margin:18px 0 4px;font-family:var(--tgb-fonte-titulo);font-size:20px;font-weight:600;line-height:1.25}',
   '.tg-busca-voce{margin:16px 0 4px;padding:0 12px;text-align:center;font-family:var(--tgb-fonte-titulo);font-size:11.5px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--tgb-cor-texto-suave);line-height:1.5}',
   '.tg-busca-voce strong{font-weight:700;color:var(--tgb-cor-texto)}',
+  '.tg-busca-aviso-nome{margin:12px 0 0;padding:10px 12px;background:var(--tgb-cor-fundo-suave);font-size:13px;line-height:1.45;color:var(--tgb-cor-texto)}',
   '.tg-busca-voce::after{content:"";display:block;width:28px;height:1px;margin:10px auto 0;background:var(--tgb-cor-texto)}',
   '.tg-busca-grade-titulo{grid-column:1 / -1;margin:14px 0 0;padding:0 0 8px;border-bottom:1px solid var(--tgb-cor-borda);font-family:var(--tgb-fonte-titulo);font-size:12px;font-weight:600;letter-spacing:.12em;text-transform:uppercase}',
   '.tg-busca-grade-titulo:first-child{margin-top:0}',
@@ -2106,10 +2131,10 @@ var TG_CSS_PAGINA = [
   '.tg-busca-vazio{margin:30px 0;text-align:center;color:var(--tgb-cor-texto-suave);font-size:14px}',
   '.tg-busca-vazio .tg-busca-chip{margin-top:8px}',
   '.tg-busca-togg{display:inline-flex;gap:2px;margin-left:2px}',
-  '.tg-busca-togg button{display:flex;align-items:center;justify-content:center;gap:2px;width:34px;height:34px;margin:0;padding:0;border:0;border-radius:4px;background:none;color:var(--tgb-cor-texto);opacity:.38;cursor:pointer}',
+  '.tg-busca-togg button{display:flex;align-items:center;justify-content:center;gap:2px;width:40px;height:44px;margin:0;padding:0;border:0;border-radius:4px;background:none;color:var(--tgb-cor-texto);opacity:.55;cursor:pointer}',
   '.tg-busca-togg button[aria-pressed="true"]{opacity:1;background:var(--tgb-cor-fundo-suave)}',
   '.tg-busca-togg-q{display:block;width:6px;height:14px;border-radius:1px;background:currentColor}',
-  '.tg-busca-togg-1 .tg-busca-togg-q{width:14px}',
+  '.tg-busca-togg-1 .tg-busca-togg-q{width:12px;background:none;border:1.5px solid currentColor;box-sizing:border-box}',
   '.tg-busca-chips-linha{flex-wrap:nowrap;overflow-x:auto;margin:0 0 18px;padding:2px 0 4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}',
   '.tg-busca-chips-linha::-webkit-scrollbar{display:none}',
   '.tg-busca-mais{display:block;min-width:230px;height:var(--tgb-botao-altura);margin:30px auto 0;padding:0 24px;border:1px solid var(--tgb-cor-texto);border-radius:var(--tgb-botao-raio);background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto);font-size:var(--tgb-botao-fonte);font-weight:var(--tgb-botao-peso);letter-spacing:var(--tgb-botao-espaco);text-transform:var(--tgb-botao-transformacao);cursor:pointer}',
@@ -2139,11 +2164,12 @@ var TG_CSS_PAGINA = [
     '.tg-busca-secao-titulo{margin:18px 0 8px}' +
     '.tg-busca-chip{min-height:36px;padding:0 14px;font-size:12px}' +
     '.tg-busca-chips{gap:6px}' +
-    '.tg-busca-chips-linha{gap:6px;margin:0 -2px 14px;padding:2px 2px 6px}' +
-    '.tg-busca-termo{min-height:50px}' +
+    '.tg-busca-chips-linha{gap:6px;margin:0 0 14px;padding:2px 0 6px}' +
+    '.tg-busca-termo{min-height:44px}' +
+    '.tg-busca-todos{height:44px}' +
     '.tg-busca-barra-btn{height:44px;padding:0 6px;font-size:12px}' +
     '.tg-busca-mais{width:100%;min-width:0;height:44px}' +
-    '.tg-busca-tp .tg-busca-nome{font-size:12px}' +
+    '.tg-busca-tp .tg-busca-nome{font-size:12.5px}' +
   '}',
   '@media (min-width:1024px){' +
     '#tg-busca-overlay{background:var(--tgb-ov-fundo-escuro);align-items:center}' +
@@ -2188,7 +2214,7 @@ function injetarEstilos() {
 /* tgb:bancada:inicio (gerado por tools/bancada/aplicar-parametros.cjs; nao edite a mao, rode a bancada de novo) */
 if (typeof TG_CSS === 'string') {
   TG_CSS += '\n' + [
-    ':root{--tgb-qv-chip-tam:42px;--tgb-qv-foto-larg:180px;--tgb-qv-largura-desk:680px;--tgb-qv-pad:8px;--tgb-qv-preco-tam:14.5px;--tgb-qv-raio:4px;--tgb-qv-raio-desk:13px;--tgb-qv-scrim:rgba(0,0,0,.65);--tgb-qv-tamanho-btn:40px}'
+    ':root{--tgb-qv-chip-tam:42px;--tgb-qv-foto-larg:180px;--tgb-qv-largura-desk:680px;--tgb-qv-pad:16px;--tgb-qv-preco-tam:16px;--tgb-qv-raio:14px;--tgb-qv-raio-desk:13px;--tgb-qv-scrim:rgba(0,0,0,.4);--tgb-qv-tamanho-btn:38px}'
   ].join('\n');
 }
 /* tgb:bancada:fim */
@@ -2283,7 +2309,7 @@ function tgQvParse(html, item) {
     if (!v || typeof v !== 'object') { continue; }
     id = tgQvIdOk(v.id);
     if (!id) { continue; }
-    vs.push({ id: id, o0: tgQvTexto(v.option0), o1: tgQvTexto(v.option1), ok: v.available === true, p: tgQvNumPositivo(v.price_number), c: tgQvNumPositivo(v.compare_at_price_number) });
+    vs.push({ id: id, o0: tgQvTexto(v.option0), o1: tgQvTexto(v.option1), ok: v.available === true, p: tgQvNumPositivo(v.price_number), c: tgQvNumPositivo(v.compare_at_price_number), parc: tgQvParcelas(v.installments_data), pix: tgQvPix(v) });
     if (vs[vs.length - 1].o1) { sem1 = false; }
     if (produtoId === null && tgQvIdOk(v.product_id)) { produtoId = tgQvIdOk(v.product_id); }
   }
@@ -2320,7 +2346,106 @@ function tgQvParse(html, item) {
     if (u && !vistos[u]) { vistos[u] = true; fotos.push(u); }
   }
   if (!fotos.length && item) { u = urlImagem(item.i); if (u) { fotos.push(u); } }
-  return { ok: true, productId: produtoId, cor: cor, preco: precoV ? precoV.p : null, precoDe: de, fotos: fotos, tamanhos: tamanhos, url: item ? urlProduto(item.s) : null };
+  return {
+    ok: true, productId: produtoId, cor: cor, preco: precoV ? precoV.p : null, precoDe: de, fotos: fotos, tamanhos: tamanhos, url: item ? urlProduto(item.s) : null,
+    parcelas: precoV && precoV.parc && Math.abs(precoV.parc.n * precoV.parc.v - precoV.p) < 1 ? precoV.parc : null,
+    pix: precoV && precoV.pix && precoV.pix < precoV.p ? precoV.pix : null,
+    descricao: tgQvDescricao(html)
+  };
+}
+
+// Parcelamento sem juros da variante (installments_data da pagina do produto: JSON em texto, por meio de pagamento).
+// Devolve a maior quantidade sem juros, entre 2 e 12, com o valor da parcela: { n, v }. Qualquer formato estranho = null.
+function tgQvParcelas(bruto) {
+  var obj, g, n, x, melhor = null;
+  try {
+    obj = typeof bruto === 'string' && bruto.length < 20000 ? JSON.parse(bruto) : null;
+    if (!obj || typeof obj !== 'object') { return null; }
+    for (g in obj) {
+      if (!Object.prototype.hasOwnProperty.call(obj, g) || !obj[g] || typeof obj[g] !== 'object') { continue; }
+      for (n in obj[g]) {
+        if (!Object.prototype.hasOwnProperty.call(obj[g], n) || !/^[0-9]{1,2}$/.test(n)) { continue; }
+        x = obj[g][n];
+        if (!x || x.without_interests !== true || !tgQvNumPositivo(x.installment_value)) { continue; }
+        if (+n >= 2 && +n <= 12 && (!melhor || +n > melhor.n)) { melhor = { n: +n, v: x.installment_value }; }
+      }
+    }
+  } catch (e) { return null; }
+  return melhor;
+}
+
+// Preco no Pix da variante: so quando a loja mostra o desconto do Pix (popup_discount_visibility) e o texto e um valor em reais.
+function tgQvPix(v) {
+  var vis, m, n;
+  try {
+    vis = v.popup_discount_visibility;
+    if (!vis || typeof vis !== 'object') { return null; }
+    for (m in vis) {
+      if (Object.prototype.hasOwnProperty.call(vis, m) && vis[m] && vis[m].methods && vis[m].methods.pix && vis[m].methods.pix.show_discount === true) {
+        m = /^R\$\s?([0-9]{1,3}(?:\.[0-9]{3})*),([0-9]{2})$/.exec(String(v.price_with_payment_discount_short || '').trim());
+        if (!m) { return null; }
+        n = parseFloat(m[1].replace(/\./g, '') + '.' + m[2]);
+        return n > 0 && isFinite(n) ? n : null;
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+// Descricao da pagina do produto (bloco .user-content), so como TEXTO estruturado, no padrao das descricoes da Talgui
+// (o mesmo que a pagina Influenciadoras le): introducao, "Destaques da Peca" e "Detalhes Tecnicos" / "Ficha Tecnica".
+// Nunca devolve HTML; o DOM recebe tudo por textContent. Sem descricao reconhecivel = null.
+var TG_QV_ENT = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", ndash: '–', mdash: '—', hellip: '…', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', ordm: 'º', ordf: 'ª', deg: '°', middot: '·', bull: '•', times: '×', ccedil: 'ç', Ccedil: 'Ç',
+  aacute: 'á', eacute: 'é', iacute: 'í', oacute: 'ó', uacute: 'ú', Aacute: 'Á', Eacute: 'É', Iacute: 'Í', Oacute: 'Ó', Uacute: 'Ú', atilde: 'ã', otilde: 'õ', Atilde: 'Ã', Otilde: 'Õ', acirc: 'â', ecirc: 'ê', ocirc: 'ô', Acirc: 'Â', Ecirc: 'Ê', Ocirc: 'Ô', agrave: 'à', Agrave: 'À', uuml: 'ü' };
+function tgQvTextoHtml(f) {
+  var t = String(f).replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, '').replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, function (todo, c) {
+    var n;
+    if (c.charAt(0) === '#') {
+      n = c.charAt(1) === 'x' || c.charAt(1) === 'X' ? parseInt(c.slice(2), 16) : parseInt(c.slice(1), 10);
+      return isFinite(n) && n > 31 && n < 0xFFFF ? String.fromCharCode(n) : '';
+    }
+    return Object.prototype.hasOwnProperty.call(TG_QV_ENT, c) ? TG_QV_ENT[c] : todo;
+  });
+  return t.replace(/\s+/g, ' ').trim();
+}
+function tgQvCorte(t, max) { return t.length > max ? t.slice(0, max - 1).replace(/\s+$/, '') + '…' : t; }
+function tgQvItens(corpo) {
+  var out = [], re = /<li\b[^>]*>([\s\S]*?)<\/li>/gi, m, t, k;
+  while ((m = re.exec(corpo)) !== null && out.length < 8) {
+    t = tgQvTextoHtml(m[1]);
+    if (!t) { continue; }
+    k = t.indexOf(':');
+    if (k > 0 && k <= 60 && t.slice(k + 1).trim()) { out.push({ rotulo: t.slice(0, k).trim(), texto: tgQvCorte(t.slice(k + 1).trim(), 400) }); }
+    else { out.push({ rotulo: null, texto: tgQvCorte(t, 400) }); }
+  }
+  return out;
+}
+function tgQvDescricao(html) {
+  var i, bloco, partes, cabeca, secoes = [], k, intro = [], re, m, t, dest, ficha, alt;
+  try {
+    if (typeof html !== 'string') { return null; }
+    i = html.indexOf('class="user-content"');
+    if (i < 0) { return null; }
+    bloco = html.slice(i, i + 60000);
+    // o bloco termina na primeira tabela (institucional) ou no fim do formulario/coluna da descricao
+    k = bloco.search(/<table\b|<form\b|data-store="product-|<script\b/i);
+    if (k > 0) { bloco = bloco.slice(0, k); }
+    bloco = bloco.replace(/^[^>]*>/, '').replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ').replace(/<h1\b[\s\S]*?<\/h1>/gi, ' ');
+    partes = bloco.split(/<h[23]\b[^>]*>([\s\S]*?)<\/h[23]>/i);
+    cabeca = partes[0] || '';
+    for (k = 1; k < partes.length; k += 2) { secoes.push({ titulo: tgQvTextoHtml(partes[k] || ''), corpo: partes[k + 1] || '' }); }
+    re = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
+    while ((m = re.exec(cabeca)) !== null && intro.length < 3) { t = tgQvTextoHtml(m[1]); if (t) { intro.push(tgQvCorte(t, 600)); } }
+    for (k = 0; k < secoes.length; k++) {
+      if (!dest && /destaque|diferencia/i.test(secoes[k].titulo)) { dest = secoes[k]; }
+      if (!ficha && /t[eé]cnic|ficha/i.test(secoes[k].titulo)) { ficha = secoes[k]; }
+    }
+    if (!dest) { for (k = 0; k < secoes.length; k++) { if (secoes[k] !== ficha && /<li\b/i.test(secoes[k].corpo)) { alt = secoes[k]; break; } } dest = alt || null; }
+    dest = dest ? tgQvItens(dest.corpo) : [];
+    ficha = ficha ? tgQvItens(ficha.corpo) : [];
+    if (!intro.length && !dest.length && !ficha.length) { return null; }
+    return { intro: intro, destaques: dest, ficha: ficha };
+  } catch (e) { return null; }
 }
 
 function tgQvBuscar(url, item) {
@@ -2438,18 +2563,46 @@ function tgQvMontarCss() {
   var V = tgQvVar, P = '.tg-busca-qv-', R = '.tg-busca-qv-raiz ';
   var fonte = V('fonte', 'inherit'), texto = V('cor-texto', '#202020'), fundo = V('cor-fundo', '#fff'), dest = V('cor-destaque', '#000');
   var suave = V('qv-cor-suave', '#6d6d6d'), linha = V('qv-cor-linha', '#e3e3e3'), borda = V('qv-cor-borda', '#bdbdbd'), erro = V('qv-cor-erro', '#991b1b');
-  var pad = V('qv-pad', '16px'), btnAlt = V('botao-altura', '48px'), btnRaio = V('botao-raio', '0px');
+  var pad = V('qv-pad', '16px'), btnAlt = V('qv-botao-altura', '48px'), btnRaio = V('botao-raio', '0px');
   var tam = V('qv-tamanho-btn', '38px'), chip = V('qv-chip-tam', '34px');
   return [
     P + 'raiz{position:fixed;top:0;right:0;bottom:0;left:0;z-index:' + TG_QV_Z + ';display:flex;align-items:flex-end;justify-content:center;font-family:' + fonte + ';color:' + texto + ';font-size:14px;line-height:1.4;-webkit-text-size-adjust:100%;text-align:left}',
     R + '*{box-sizing:border-box}',
     P + 'fundo{position:absolute;top:0;right:0;bottom:0;left:0;background:' + V('qv-scrim', 'rgba(0,0,0,.4)') + ';animation:tg-busca-qv-fade .2s ease}',
-    P + 'painel{position:relative;display:flex;flex-direction:column;width:100%;max-height:' + V('qv-altura-max', '92vh') + ';background:' + fundo + ';border-radius:' + V('qv-raio', '14px') + ' ' + V('qv-raio', '14px') + ' 0 0;overflow:hidden;animation:tg-busca-qv-sobe .28s ease}',
+    P + 'painel{position:relative;display:flex;flex-direction:column;width:100%;max-height:' + V('qv-altura-max', '94vh') + ';background:' + fundo + ';border-radius:' + V('qv-raio', '14px') + ' ' + V('qv-raio', '14px') + ' 0 0;overflow:hidden;animation:tg-busca-qv-sobe .28s ease}',
     P + 'painel[data-arrastando="true"]{animation:none}',
+    P + 'painel:focus{outline:0}',
     P + 'cab{flex:none;display:grid;grid-template-columns:1fr auto;align-items:center;gap:0 8px;padding:10px ' + pad + ' 8px;border-bottom:1px solid ' + linha + '}',
     P + 'alca{grid-column:1/-1;display:flex;align-items:center;justify-content:center;height:16px;margin:-6px calc(-1*' + pad + ') 0;touch-action:none}',
     P + 'alca span{display:block;width:40px;height:4px;border-radius:4px;background:#d4d4d4}',
-    R + 'h2' + P + 'titulo{margin:0;padding:0;min-width:0;font-family:inherit;font-size:14px;font-weight:500;line-height:1.3;letter-spacing:normal;text-transform:uppercase;color:' + texto + ';display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}',
+    // cabecalho como na pagina Influenciadoras: rotulo pequeno (caixa alta, cinza) e o nome da peca vai para o corpo, junto do preco
+    R + 'p' + P + 'cab-rotulo{margin:0;padding:0;min-width:0;font-size:10px;font-weight:400;line-height:1.3;letter-spacing:.08em;text-transform:uppercase;color:' + suave + '}',
+    R + 'h2' + P + 'titulo{display:flex;align-items:flex-start;gap:8px;margin:16px 0 0;padding:0;min-width:0;font-family:inherit;font-size:17px;font-weight:500;line-height:1.3;letter-spacing:normal;text-transform:none;color:' + texto + '}',
+    P + 'bolinha{flex:none;display:block;width:14px;height:14px;margin-top:4px;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(0,0,0,.2)}',
+    P + 'parc{margin:2px 0 0;font-size:12px;line-height:1.4;color:' + suave + '}',
+    P + 'parc b{font-weight:600;color:' + texto + '}',
+    P + 'dest{display:grid;gap:8px;margin:14px 0 0;padding:0;list-style:none}',
+    P + 'dest li{margin:0;padding:0;font-size:13px;line-height:1.5;color:#3a3a3a}',
+    P + 'dest b{font-weight:500;color:' + texto + '}',
+    P + 'acc{margin:0;border-top:1px solid ' + linha + '}',
+    P + 'acc:last-of-type{border-bottom:1px solid ' + linha + '}',
+    P + 'accs{margin-top:18px}',
+    R + 'button' + P + 'acc-bt{display:flex;align-items:center;justify-content:space-between;width:100%;min-height:48px;margin:0;padding:0;border:0;background:none;color:' + texto + ';font-family:inherit;font-size:10px;font-weight:400;line-height:1.3;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'acc-bt::after{content:"+";font-size:18px;letter-spacing:0;color:' + texto + '}',
+    R + 'button' + P + 'acc-bt[aria-expanded="true"]::after{content:"\\2212"}',
+    P + 'acc-corpo{padding:0 0 12px}',
+    P + 'acc-corpo[hidden]{display:none}',
+    P + 'texto{margin:0 0 10px;font-size:13.5px;line-height:1.65;color:#3a3a3a}',
+    P + 'ficha{display:grid;grid-template-columns:minmax(0,40%) minmax(0,1fr);gap:8px;margin:0;padding:8px 0;border-top:1px solid #f2f2f2;font-size:12.5px;line-height:1.5;color:#3a3a3a}',
+    P + 'ficha:first-child{border-top:0}',
+    P + 'ficha dt{margin:0;font-weight:600;color:' + texto + '}',
+    P + 'ficha dd{margin:0}',
+    P + 'pe-peca{display:flex;align-items:center;gap:10px;min-width:0;margin:0 0 8px}',
+    R + P + 'pe-peca img{flex:none;display:block;width:40px;height:50px;max-width:none;object-fit:cover;background:#f2f2f2}',
+    P + 'pe-inf{display:grid;gap:1px;min-width:0}',
+    P + 'pe-nome{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:1.35;color:' + texto + '}',
+    P + 'pe-preco{display:flex;align-items:baseline;gap:8px;margin:0;font-size:14px;font-weight:600;line-height:1.3}',
+    P + 'pe-preco span{font-size:11.5px;font-weight:400;color:' + suave + '}',
     R + 'button' + P + 'fechar{display:flex;align-items:center;justify-content:center;width:44px;height:44px;margin:0;padding:0;border:0;border-radius:50%;background:#f2f2f2;color:' + texto + ';font:inherit;font-size:20px;line-height:1;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button:focus-visible,' + R + 'a:focus-visible{outline:2px solid #000;outline-offset:2px}',
     P + 'rolagem{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:0 ' + pad + ' 8px}',
@@ -2457,32 +2610,50 @@ function tgQvMontarCss() {
     P + 'palco{position:relative;min-width:0}',
     P + 'trilho{position:relative;display:flex;gap:6px;min-width:0;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x mandatory;scroll-padding-left:' + pad + ';padding:0 ' + pad + ';scrollbar-width:none}',
     P + 'trilho::-webkit-scrollbar{display:none}',
-    P + 'quadro{flex:0 0 ' + V('qv-foto-larg', '150px') + ';min-width:0;aspect-ratio:' + V('qv-foto-proporcao', '2 / 3') + ';overflow:hidden;scroll-snap-align:start;background:#f2f2f2}',
+    // galeria como na pagina Influenciadoras: uma foto por tela (a proxima aparece na borda), contador e miniaturas 44x56
+    P + 'quadro{flex:0 0 calc(100% - 34px);min-width:0;aspect-ratio:' + V('qv-foto-proporcao', '2 / 3') + ';overflow:hidden;scroll-snap-align:start;background:#f2f2f2}',
+    P + 'trilho-uma ' + P + 'quadro{flex-basis:100%}',
     R + P + 'quadro img{display:block;width:100%;max-width:none;height:100%;object-fit:cover}',
-    P + 'conta,' + P + 'minis{display:none}',
-    P + 'inf{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;min-width:0;padding:14px 0 6px}',
+    P + 'conta{position:absolute;right:' + 'calc(' + pad + ' + 42px);bottom:8px;padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.45);color:#fff;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums;pointer-events:none}',
+    P + 'minis{display:flex;gap:6px;min-width:0;margin:8px 0 0;padding:0 ' + pad + ';overflow-x:auto;scrollbar-width:none}',
+    P + 'minis::-webkit-scrollbar{display:none}',
+    R + 'button' + P + 'mini{flex:none;width:44px;height:56px;margin:0;padding:0;border:1px solid transparent;border-radius:0;background:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'mini[aria-current="true"]{border-color:' + texto + '}',
+    R + P + 'mini img{display:block;width:100%;max-width:none;height:100%;object-fit:cover}',
+    P + 'inf{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;min-width:0;padding:0 0 6px}',
     P + 'inf>*{min-width:0}',
-    P + 'preco{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:0;font-size:' + V('qv-preco-tam', '16px') + ';font-weight:' + V('qv-preco-peso', '600') + ';line-height:1.3}',
+    P + 'preco{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:4px 0 0;font-size:' + V('qv-preco-tam', '16px') + ';font-weight:' + V('qv-preco-peso', '600') + ';line-height:1.3}',
     P + 'preco s{font-size:13px;font-weight:400;color:' + suave + '}',
-    P + 'rotulo{margin:16px 0 8px;font-size:12px;font-weight:500;line-height:1.3;text-transform:uppercase;letter-spacing:.02em}',
-    P + 'rotulo span{font-weight:400;text-transform:none;letter-spacing:0;color:' + suave + '}',
+    P + 'rotulo{margin:18px 0 8px;font-size:10px;font-weight:400;line-height:1.3;text-transform:uppercase;letter-spacing:.08em;color:' + suave + '}',
+    P + 'rotulo span{text-transform:none;letter-spacing:0;font-size:12px;color:' + texto + '}',
+    P + 'pe ' + P + 'rotulo{margin:0 0 6px}',
     P + 'cores,' + P + 'tamanhos{display:flex;flex-wrap:wrap;gap:6px;margin:0;padding:0;list-style:none}',
-    P + 'cores{gap:8px}',
-    R + 'button' + P + 'cor{position:relative;display:block;width:' + chip + ';height:' + chip + ';margin:0;padding:2px;border:1px solid transparent;border-radius:50%;background:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
-    R + 'button' + P + 'cor[aria-pressed="true"]{border-color:' + dest + '}',
-    R + P + 'cor img,' + R + P + 'cor-sem{display:block;width:100%;height:100%;border-radius:50%;object-fit:cover;background:#e9e9e9;box-shadow:inset 0 0 0 1px rgba(0,0,0,.15)}',
+    // outras cores em cards pequenos com foto e nome (como "Tambem em outras cores" da pagina Influenciadoras), em trilho horizontal
+    P + 'cores{flex-wrap:nowrap;gap:10px;margin:0 calc(-1*' + pad + ');padding:0 ' + pad + ' 2px;overflow-x:auto;scroll-snap-type:x proximity;scroll-padding-left:' + pad + ';scrollbar-width:none}',
+    P + 'cores::-webkit-scrollbar{display:none}',
+    R + 'button' + P + 'cor{position:relative;display:grid;gap:4px;flex:none;width:76px;margin:0;padding:0;border:0;border-radius:0;background:none;color:' + texto + ';font-family:inherit;text-align:left;scroll-snap-align:start;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + P + 'cor img,' + R + P + 'cor-sem{display:block;width:76px;height:95px;max-width:none;object-fit:cover;background:#f2f2f2;outline:1px solid transparent;outline-offset:-1px}',
+    R + 'button' + P + 'cor[aria-pressed="true"] img,' + R + 'button' + P + 'cor[aria-pressed="true"] ' + P + 'cor-sem{outline:2px solid ' + dest + ';outline-offset:-2px}',
+    P + 'cor-nome{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:11px;line-height:1.3}',
+    R + 'button' + P + 'cor[aria-pressed="true"] ' + P + 'cor-nome{font-weight:600}',
     R + 'button' + P + 'cor-esg img{opacity:.4}',
+    R + 'button' + P + 'cor-esg ' + P + 'cor-nome{color:' + suave + '}',
     R + 'button' + P + 'tam{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:none;min-width:' + tam + ';height:' + tam + ';margin:0;padding:0 8px;border:1px solid ' + borda + ';border-radius:0;background:' + fundo + ';color:' + texto + ';font-family:inherit;font-size:12.5px;font-weight:400;line-height:1;letter-spacing:normal;text-transform:none;font-variant-numeric:tabular-nums;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    // area de toque de 44 px sem aumentar o desenho do botao
+    R + 'button' + P + 'tam::before{content:"";position:absolute;top:-3px;right:-3px;bottom:-3px;left:-3px}',
     R + 'button' + P + 'tam[aria-pressed="true"]{background:' + dest + ';border-color:' + dest + ';color:#fff}',
     R + 'button' + P + 'tam-esg{color:#a6a6a6;border-color:#e1e1e1;background:' + fundo + ' linear-gradient(to top right,transparent calc(50% - .5px),#c4c4c4 50%,transparent calc(50% + .5px));cursor:not-allowed}',
+    P + 'treme{animation:tg-busca-qv-treme .35s ease-in-out}',
     P + 'esq{display:flex;gap:6px}',
     P + 'esq i{display:block;width:' + tam + ';height:' + tam + ';background:#eee;animation:tg-busca-qv-pulsa 1.2s ease-in-out infinite}',
-    P + 'msg{min-height:18px;margin:10px 0 0;font-size:12px;line-height:1.4;color:' + suave + '}',
+    P + 'msg{min-height:0;margin:6px 0 0;font-size:12px;line-height:1.4;color:' + suave + '}',
+    P + 'msg:empty{display:none}',
     P + 'msg-erro{color:' + erro + '}',
     P + 'pe{flex:none;display:grid;gap:4px;padding:12px ' + pad + ' calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid ' + linha + ';background:' + fundo + '}',
     R + 'button' + P + 'add{display:flex;align-items:center;justify-content:center;width:100%;min-height:' + btnAlt + ';margin:0;padding:0 16px;border:1px solid ' + dest + ';border-radius:' + btnRaio + ';background:' + dest + ';color:#fff;font-family:inherit;font-size:14px;font-weight:500;line-height:1.2;letter-spacing:normal;text-transform:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button' + P + 'add:disabled{background:#e6e6e6;border-color:#e6e6e6;color:#8a8a8a;cursor:not-allowed}',
-    R + 'a' + P + 'pagina{display:flex;align-items:center;justify-content:center;min-height:36px;padding:6px 0;color:' + texto + ';font-size:13px;line-height:1.3;text-decoration:underline;text-underline-offset:3px}',
+    R + 'a' + P + 'pagina{display:flex;align-items:center;justify-self:start;min-height:44px;margin:14px 0 0;padding:0;color:' + texto + ';font-size:10px;line-height:1.3;letter-spacing:.08em;text-transform:uppercase;text-decoration:underline;text-underline-offset:3px}',
+    R + P + 'pe a' + P + 'pagina{justify-self:stretch;justify-content:center;margin:0;font-size:13px;letter-spacing:normal;text-transform:none}',
     R + 'a' + P + 'pagina-prim{min-height:' + btnAlt + ';border:1px solid ' + dest + ';border-radius:' + btnRaio + ';background:' + dest + ';color:#fff;font-weight:500;text-decoration:none}',
     P + 'peca{display:grid;grid-template-columns:' + V('qv-peca-foto', '84px') + ' minmax(0,1fr);gap:0 12px;padding:14px 0;border-bottom:1px solid ' + linha + '}',
     P + 'peca:last-child{border-bottom:0}',
@@ -2495,7 +2666,8 @@ function tgQvMontarCss() {
     '@keyframes tg-busca-qv-sobe{from{transform:translateY(24px);opacity:.6}}',
     '@keyframes tg-busca-qv-fade{from{opacity:0}}',
     '@keyframes tg-busca-qv-pulsa{50%{opacity:.5}}',
-    '@media (prefers-reduced-motion:reduce){' + P + 'painel,' + P + 'fundo,' + P + 'esq i{animation:none}}',
+    '@keyframes tg-busca-qv-treme{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}',
+    '@media (prefers-reduced-motion:reduce){' + P + 'painel,' + P + 'fundo,' + P + 'esq i,' + P + 'treme{animation:none}}',
     '@media (min-width:768px){',
     P + 'raiz{align-items:center}',
     P + 'painel{width:min(' + V('qv-largura-desk', '880px') + ',94vw);max-height:' + V('qv-altura-max-desk', '88vh') + ';border-radius:' + V('qv-raio-desk', '12px') + ';display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);grid-template-rows:auto minmax(0,1fr) auto;grid-template-areas:"gal cab" "gal inf" "gal pe"}',
@@ -2617,18 +2789,22 @@ function tgQuickViewAbrir(item, opcoes) {
     raiz = tgQvNo('div', 'tg-busca-qv-raiz', null, { id: 'tg-busca-qv' });
     fundo = tgQvNo('div', 'tg-busca-qv-fundo');
     painel = tgQvNo('div', 'tg-busca-qv-painel', null, { role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'tg-busca-qv-titulo' });
+    painel.setAttribute('tabindex', '-1');
+    // Como o modal da pagina Influenciadoras: rotulo no cabecalho; nome, preco, cores e descricao no corpo; peca, tamanhos e botao no rodape fixo.
     titulo = tgQvNo('h2', 'tg-busca-qv-titulo', [item.n], { id: 'tg-busca-qv-titulo' });
     bFechar = tgQvNo('button', 'tg-busca-qv-fechar', ['×'], { type: 'button', 'aria-label': 'Fechar' });
-    cab = tgQvNo('div', 'tg-busca-qv-cab', [tgQvNo('div', 'tg-busca-qv-alca', [el('span')]), titulo, bFechar]);
+    cab = tgQvNo('div', 'tg-busca-qv-cab', [tgQvNo('div', 'tg-busca-qv-alca', [el('span')]), tgQvNo('p', 'tg-busca-qv-cab-rotulo', ['Detalhes da peça']), bFechar]);
     gal = tgQvNo('div', 'tg-busca-qv-gal');
     inf = tgQvNo('div', 'tg-busca-qv-inf');
     rolagem = tgQvNo('div', 'tg-busca-qv-rolagem', [gal, inf]);
     bAdd = tgQvNo('button', 'tg-busca-qv-add', ['Adicionar à sacola'], { type: 'button' });
     aPagina = tgQvNo('a', 'tg-busca-qv-pagina', ['Ver página completa'], { href: urlProduto(item.s) });
-    pe = tgQvNo('div', 'tg-busca-qv-pe', [bAdd, aPagina]);
+    S.pePeca = tgQvNo('div', 'tg-busca-qv-pe-peca');
+    S.peTam = tgQvNo('div', 'tg-busca-qv-pe-tam');
+    pe = tgQvNo('div', 'tg-busca-qv-pe', [S.pePeca, S.peTam, bAdd]);
     painel.appendChild(cab); painel.appendChild(rolagem); painel.appendChild(pe);
     raiz.appendChild(fundo); raiz.appendChild(painel);
-    S.raiz = raiz; S.painel = painel; S.titulo = titulo; S.gal = gal; S.inf = inf; S.bAdd = bAdd; S.aPagina = aPagina; S.bFechar = bFechar;
+    S.raiz = raiz; S.painel = painel; S.titulo = titulo; S.gal = gal; S.inf = inf; S.bAdd = bAdd; S.aPagina = aPagina; S.bFechar = bFechar; S.pe = pe; S.rolagem = rolagem;
 
     fundo.addEventListener('click', function () { tgQvFechar('fundo'); });
     bFechar.addEventListener('click', function () { tgQvFechar('botao'); });
@@ -2643,6 +2819,7 @@ function tgQuickViewAbrir(item, opcoes) {
         if (!f.length) { ev.preventDefault(); return; }
         a = document.activeElement;
         if (!S.painel.contains(a)) { ev.preventDefault(); f[0].focus(); return; }
+        if (a === S.painel) { ev.preventDefault(); (ev.shiftKey ? f[f.length - 1] : f[0]).focus(); return; }
         if (ev.shiftKey && a === f[0]) { ev.preventDefault(); f[f.length - 1].focus(); } else if (!ev.shiftKey && a === f[f.length - 1]) { ev.preventDefault(); f[0].focus(); }
       }
     };
@@ -2652,7 +2829,7 @@ function tgQuickViewAbrir(item, opcoes) {
     document.body.style.overflow = 'hidden';
     document.documentElement.style.overflow = 'hidden';
     document.body.appendChild(raiz);
-    try { bFechar.focus({ preventScroll: true }); } catch (e) {}
+    try { painel.focus({ preventScroll: true }); } catch (e) {}
     tgQvEmitir(S, 'tg_qv_abrir', { position: S.irmaos.indexOf(item), results_count: S.irmaos.length });
     tgQvPintar(S);
     tgQvCarregar(S);
@@ -2702,7 +2879,7 @@ function tgQvPintarGaleria(S) {
   S.gal.textContent = '';
   if (!fotos.length) { S.gal.style.display = 'none'; return; }
   S.gal.style.display = '';
-  trilho = tgQvNo('div', 'tg-busca-qv-trilho', null, { role: 'group', 'aria-label': 'Fotos de ' + S.item.n });
+  trilho = tgQvNo('div', 'tg-busca-qv-trilho' + (fotos.length === 1 ? ' tg-busca-qv-trilho-uma' : ''), null, { role: 'group', 'aria-label': 'Fotos de ' + S.item.n });
   fotos.forEach(function (u, k) {
     var q = tgQvNo('div', 'tg-busca-qv-quadro', [el('img', { src: u, alt: k === 0 ? S.item.n : '', loading: k < 2 ? 'eager' : 'lazy', decoding: 'async' })]);
     quadros.push(q); trilho.appendChild(q);
@@ -2725,7 +2902,7 @@ function tgQvPintarGaleria(S) {
     trilho.addEventListener('scroll', function () {
       if (raf) { return; }
       raf = (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
-        var passo = quadros[0].offsetWidth + 0, k;
+        var passo = quadros[0].offsetWidth + 6, k;
         raf = 0;
         if (passo <= 0) { return; }
         k = Math.min(Math.max(Math.round(trilho.scrollLeft / passo), 0), fotos.length - 1);
@@ -2780,18 +2957,86 @@ function tgQvAtualizarEscolha(S) {
 
 function tgQvAtualizarRodape(S) {
   var d = S.dados, pronto = !!(d && S.tam), esgotada = !!(d && !S.algumDisponivel), texto;
-  if (S.erro) { S.bAdd.style.display = 'none'; S.aPagina.setAttribute('class', 'tg-busca-qv-pagina tg-busca-qv-pagina-prim'); } else {
+  // falha ao ler a pagina: o link da pagina vira o botao principal do rodape; senao fica discreto no fim do corpo
+  if (S.erro) { S.bAdd.style.display = 'none'; S.aPagina.setAttribute('class', 'tg-busca-qv-pagina tg-busca-qv-pagina-prim'); if (S.pe && S.aPagina.parentNode !== S.pe) { S.pe.appendChild(S.aPagina); } } else {
     S.bAdd.style.display = '';
     S.aPagina.setAttribute('class', 'tg-busca-qv-pagina');
+    if (S.inf && S.aPagina.parentNode !== S.inf) { S.inf.appendChild(S.aPagina); }
   }
   if (S.ocupado) { texto = 'Adicionando…'; } else if (esgotada) { texto = 'Peça esgotada nesta cor'; } else { texto = 'Adicionar à sacola'; }
   S.bAdd.textContent = texto;
-  if (pronto && !S.ocupado) { S.bAdd.removeAttribute('disabled'); S.bAdd.removeAttribute('aria-disabled'); } else { S.bAdd.setAttribute('disabled', 'disabled'); S.bAdd.setAttribute('aria-disabled', 'true'); }
+  if (d && S.algumDisponivel && !S.ocupado) { S.bAdd.removeAttribute('disabled'); S.bAdd.removeAttribute('aria-disabled'); } else { S.bAdd.setAttribute('disabled', 'disabled'); S.bAdd.setAttribute('aria-disabled', 'true'); }
   if (S.msgEl) {
-    S.msgEl.textContent = S.msg || (d && !S.tam && S.algumDisponivel ? 'Escolha um tamanho para adicionar à sacola.' : '');
+    // sem dica fixa: o botao fica ativo e, se a cliente tocar sem tamanho, a mensagem pede o tamanho (o rodape fica mais baixo)
+    S.msgEl.textContent = S.msg || '';
     S.msgEl.setAttribute('class', 'tg-busca-qv-msg' + (S.msgErro ? ' tg-busca-qv-msg-erro' : ''));
   }
   try { S.aPagina.setAttribute('href', urlProduto(S.item.s)); } catch (e) {}
+}
+
+// "R$ 350,55 no Pix" e "ou 5x de R$ 73,80 sem juros", lidos da pagina da peca (so aparecem depois que ela chega).
+function tgQvLinhaParcelas(S) {
+  var d = S.dados, linhas = [];
+  if (!d) { return null; }
+  if (d.pix) { linhas.push(tgQvNo('p', 'tg-busca-qv-parc', [el('b', null, [reais(d.pix)]), ' no Pix'])); }
+  if (d.parcelas) { linhas.push(tgQvNo('p', 'tg-busca-qv-parc', ['ou ' + d.parcelas.n + 'x de ' + reais(d.parcelas.v) + ' sem juros'])); }
+  return linhas.length ? tgQvNo('div', 'tg-busca-qv-parcs', linhas) : null;
+}
+
+// Destaques (ate 3, sempre visiveis) e Descricao / Detalhes da peca recolhidos, como na pagina Influenciadoras. So texto.
+function tgQvPintarDescricao(S) {
+  var ds = S.dados && S.dados.descricao, lista, accs, i, x, corpo, dl;
+  if (!ds) { return; }
+  if (ds.destaques.length) {
+    lista = tgQvNo('ul', 'tg-busca-qv-dest');
+    for (i = 0; i < ds.destaques.length && i < 3; i++) {
+      x = ds.destaques[i];
+      lista.appendChild(el('li', null, [x.rotulo ? el('b', null, [x.rotulo + ':']) : null, x.rotulo ? ' ' : null, x.texto]));
+    }
+    S.inf.appendChild(lista);
+  }
+  accs = tgQvNo('div', 'tg-busca-qv-accs');
+  if (ds.intro.length) {
+    corpo = tgQvNo('div', 'tg-busca-qv-acc-corpo');
+    for (i = 0; i < ds.intro.length; i++) { corpo.appendChild(tgQvNo('p', 'tg-busca-qv-texto', [ds.intro[i]])); }
+    accs.appendChild(tgQvSanfona(S, 'Descrição', corpo, 'desc'));
+  }
+  if (ds.ficha.length) {
+    dl = tgQvNo('dl', 'tg-busca-qv-acc-corpo');
+    for (i = 0; i < ds.ficha.length; i++) { dl.appendChild(tgQvNo('div', 'tg-busca-qv-ficha', [el('dt', null, [ds.ficha[i].rotulo || '—']), el('dd', null, [ds.ficha[i].texto])])); }
+    accs.appendChild(tgQvSanfona(S, 'Detalhes da peça', dl, 'ficha'));
+  }
+  if (accs.firstChild) { S.inf.appendChild(accs); }
+}
+
+// Bloco recolhivel: botao com aria-expanded e corpo com hidden (abre e fecha sem animacao de altura; leitor de tela anuncia o estado).
+function tgQvSanfona(S, titulo, corpo, chave) {
+  var id = 'tg-busca-qv-acc-' + chave, aberto = !!(S.abertos && S.abertos[chave]), bt, caixa;
+  corpo.setAttribute('id', id);
+  if (!aberto) { corpo.setAttribute('hidden', 'hidden'); }
+  bt = tgQvNo('button', 'tg-busca-qv-acc-bt', [titulo], { type: 'button', 'aria-expanded': aberto ? 'true' : 'false', 'aria-controls': id });
+  bt.addEventListener('click', function () {
+    var abrir = bt.getAttribute('aria-expanded') !== 'true';
+    bt.setAttribute('aria-expanded', abrir ? 'true' : 'false');
+    if (abrir) { corpo.removeAttribute('hidden'); } else { corpo.setAttribute('hidden', 'hidden'); }
+    S.abertos = S.abertos || {};
+    S.abertos[chave] = abrir;
+    if (abrir) { tgQvEmitir(S, 'tg_qv_detalhes', { reason: chave }); }
+  });
+  caixa = tgQvNo('div', 'tg-busca-qv-acc', [bt, corpo]);
+  return caixa;
+}
+
+// Rodape: miniatura, nome e preco da peca atual (a cliente ve o que vai para a sacola em qualquer ponto da rolagem).
+function tgQvPintarPePeca(S) {
+  var d = S.dados, foto = urlImagem(S.item.i), p = d && d.preco ? d.preco : (precoFinal(S.item) || {}).final, info;
+  S.pePeca.textContent = '';
+  if (foto) { S.pePeca.appendChild(tgFotoReserva(el('img', { src: urlImagemLeve(S.item.i, 100), alt: '', width: '40', height: '50', decoding: 'async' }), foto)); }
+  info = tgQvNo('div', 'tg-busca-qv-pe-inf', [
+    tgQvNo('p', 'tg-busca-qv-pe-nome', [S.item.n]),
+    p ? tgQvNo('p', 'tg-busca-qv-pe-preco', [reais(p), d && d.parcelas ? el('span', null, [d.parcelas.n + 'x sem juros']) : null]) : null
+  ]);
+  S.pePeca.appendChild(info);
 }
 
 function tgQvPintar(S) {
@@ -2799,20 +3044,28 @@ function tgQvPintar(S) {
   if (S.fechado) { return; }
   ativo = document.activeElement;
   if (ativo && ativo.getAttribute && S.inf.contains(ativo)) { focoCor = ativo.getAttribute('data-qv-cor'); }
-  S.titulo.textContent = S.item.n;
   tgQvPintarGaleria(S);
   S.inf.textContent = '';
+  // nome da peca com a bolinha da cor (como na pagina Influenciadoras), preco e parcelamento
+  nomeCor = d && d.cor ? d.cor : tgQvRotuloCor(S.item, S.irmaos);
+  S.titulo.textContent = '';
+  S.titulo.appendChild(el('span', null, [S.item.n]));
+  if (nomeCor && typeof tgCorSlug === 'function' && tgCorSlug(nomeCor) !== 'outro') {
+    S.titulo.appendChild(el('span', { 'class': 'tg-busca-bolinha tg-busca-qv-bolinha', 'data-cor': tgCorSlug(nomeCor), role: 'img', 'aria-label': 'Cor: ' + nomeCor }));
+  }
+  S.inf.appendChild(S.titulo);
   rot = tgQvPreco(S);
   if (rot) { S.inf.appendChild(rot); }
+  rot = tgQvLinhaParcelas(S);
+  if (rot) { S.inf.appendChild(rot); }
   // cores (irmaos) e rotulo da cor atual
-  nomeCor = d && d.cor ? d.cor : tgQvRotuloCor(S.item, S.irmaos);
   if (S.irmaos.length > 1) {
     S.inf.appendChild(tgQvNo('p', 'tg-busca-qv-rotulo', ['Cor', nomeCor ? el('span', null, [': ' + nomeCor]) : null]));
     cores = tgQvNo('div', 'tg-busca-qv-cores', null, { role: 'group', 'aria-label': 'Cor' });
     for (i = 0; i < S.irmaos.length; i++) {
       x = S.irmaos[i];
       lista = tgQvRotuloCor(x, S.irmaos) || x.n;
-      b = tgQvNo('button', 'tg-busca-qv-cor' + (Array.isArray(x.sz) && !x.sz.length ? ' tg-busca-qv-cor-esg' : ''), [urlImagem(x.i) ? el('img', { src: urlImagem(x.i), alt: '', loading: 'lazy', decoding: 'async' }) : tgQvNo('span', 'tg-busca-qv-cor-sem')], {
+      b = tgQvNo('button', 'tg-busca-qv-cor' + (Array.isArray(x.sz) && !x.sz.length ? ' tg-busca-qv-cor-esg' : ''), [urlImagem(x.i) ? tgFotoReserva(el('img', { src: urlImagemLeve(x.i, 320), alt: '', loading: 'lazy', decoding: 'async' }), urlImagem(x.i)) : tgQvNo('span', 'tg-busca-qv-cor-sem'), tgQvNo('span', 'tg-busca-qv-cor-nome', [(lista || x.n) + (Array.isArray(x.sz) && !x.sz.length ? ' (esgotada)' : '')], { 'aria-hidden': 'true' })], {
         type: 'button', 'aria-pressed': x === S.item ? 'true' : 'false', 'aria-label': 'Cor ' + lista, 'data-qv-cor': x.s
       });
       (function (alvo, pos) {
@@ -2832,13 +3085,17 @@ function tgQvPintar(S) {
   } else if (nomeCor) {
     S.inf.appendChild(tgQvNo('p', 'tg-busca-qv-rotulo', ['Cor', el('span', null, [': ' + nomeCor])]));
   }
-  // tamanhos
+  // destaques e descricao (so quando a pagina da peca trouxe a descricao no padrao da loja)
+  tgQvPintarDescricao(S);
+  // rodape fixo: a peca (miniatura, nome e preco), os tamanhos e o aviso
+  tgQvPintarPePeca(S);
+  S.peTam.textContent = '';
   S.rotuloTam = el('span', null, [S.tam ? ': ' + S.tam : '']);
-  if (!S.erro) { S.inf.appendChild(tgQvNo('p', 'tg-busca-qv-rotulo', ['Tamanho', S.rotuloTam])); }
+  if (!S.erro) { S.peTam.appendChild(tgQvNo('p', 'tg-busca-qv-rotulo', ['Tamanho', S.rotuloTam])); }
   tams = S.erro ? null : tgQvPintarTamanhos(S);
-  if (tams) { S.inf.appendChild(tams); }
+  if (tams) { S.peTam.appendChild(tams); }
   S.msgEl = tgQvNo('p', 'tg-busca-qv-msg', null, { role: 'status', 'aria-live': 'polite' });
-  S.inf.appendChild(S.msgEl);
+  S.peTam.appendChild(S.msgEl);
   if (S.erro) {
     S.msg = 'Não conseguimos carregar os tamanhos agora. Abra a página da peça para escolher e comprar.'; S.msgErro = true;
   }
@@ -2852,8 +3109,15 @@ function tgQvPintar(S) {
 
 // Adicionar a sacola com o tamanho escolhido. Falha mostra aviso e deixa o link da pagina como saida.
 function tgQvAdicionar(S) {
-  var d = S.dados, t, i, escolhido = null;
-  if (!d || !S.tam || S.ocupado) { return; }
+  var d = S.dados, t, i, escolhido = null, caixa;
+  if (!d || S.ocupado) { return; }
+  if (!S.tam) {
+    S.msg = 'Escolha seu tamanho.'; S.msgErro = true;
+    tgQvAtualizarRodape(S);
+    caixa = S.peTam ? S.peTam.querySelector('.tg-busca-qv-tamanhos') : null;
+    if (caixa) { caixa.classList.remove('tg-busca-qv-treme'); void caixa.offsetWidth; caixa.classList.add('tg-busca-qv-treme'); }
+    return;
+  }
   for (i = 0; i < d.tamanhos.length; i++) { t = d.tamanhos[i]; if (t.rotulo === S.tam && t.disponivel) { escolhido = t; } }
   if (!escolhido) { return; }
   S.ocupado = true; S.msg = ''; S.msgErro = false;
@@ -2934,10 +3198,11 @@ function tgQuickViewConjunto(conj, opcoes) {
     raiz = tgQvNo('div', 'tg-busca-qv-raiz', null, { id: 'tg-busca-qv' });
     fundo = tgQvNo('div', 'tg-busca-qv-fundo');
     painel = tgQvNo('div', 'tg-busca-qv-painel tg-busca-qv-painel-conj', null, { role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'tg-busca-qv-titulo' });
+    painel.setAttribute('tabindex', '-1');
     titulo = tgQvNo('h2', 'tg-busca-qv-titulo', [mc.modelo.replace(/^\S+\s+/, '') + ' + ' + mb.modelo.replace(/^\S+\s+/, '') + (conj.cor ? ' · ' + conj.cor : '')], { id: 'tg-busca-qv-titulo' });
     bFechar = tgQvNo('button', 'tg-busca-qv-fechar', ['×'], { type: 'button', 'aria-label': 'Fechar' });
-    cab = tgQvNo('div', 'tg-busca-qv-cab', [tgQvNo('div', 'tg-busca-qv-alca', [el('span')]), titulo, bFechar]);
-    rolagem = tgQvNo('div', 'tg-busca-qv-rolagem');
+    cab = tgQvNo('div', 'tg-busca-qv-cab', [tgQvNo('div', 'tg-busca-qv-alca', [el('span')]), tgQvNo('p', 'tg-busca-qv-cab-rotulo', ['Conjunto']), bFechar]);
+    rolagem = tgQvNo('div', 'tg-busca-qv-rolagem', [titulo]);
     for (k = 0; k < S.partes.length; k++) {
       (function (x) {
         var pr = precoFinal(x.item), foto = urlImagem(x.item.i), href = urlProduto(x.item.s), inf;
@@ -2976,6 +3241,7 @@ function tgQuickViewConjunto(conj, opcoes) {
         if (!f.length) { ev.preventDefault(); return; }
         a = document.activeElement;
         if (!S.painel.contains(a)) { ev.preventDefault(); f[0].focus(); return; }
+        if (a === S.painel) { ev.preventDefault(); (ev.shiftKey ? f[f.length - 1] : f[0]).focus(); return; }
         if (ev.shiftKey && a === f[0]) { ev.preventDefault(); f[f.length - 1].focus(); } else if (!ev.shiftKey && a === f[f.length - 1]) { ev.preventDefault(); f[0].focus(); }
       }
     };
@@ -2984,7 +3250,7 @@ function tgQuickViewConjunto(conj, opcoes) {
     document.body.style.overflow = 'hidden';
     document.documentElement.style.overflow = 'hidden';
     document.body.appendChild(raiz);
-    try { bFechar.focus({ preventScroll: true }); } catch (e) {}
+    try { painel.focus({ preventScroll: true }); } catch (e) {}
     tgQvEmitir(S, 'tg_qv_abrir', { position: 0, results_count: 2 });
     S.partes.forEach(function (x) {
       tgQvConjPintarParte(S, x);
@@ -3242,7 +3508,7 @@ function tgAcLinha(p, posicao, consulta, corrigiu, info, extra) {
     el('div', { 'class': 'tg-busca-info' }, [
       el('div', { 'class': 'tg-busca-nome' }, [p.n]),
       el('div', { 'class': 'tg-busca-meta' }, [preco, selo]),
-      pilulas(p.sz, 5, extra && extra.tamanhos)
+      pilulas(p.sz, 8, extra && extra.tamanhos)
     ])
   ]);
   a.addEventListener('click', function () {
@@ -3266,13 +3532,13 @@ function tgAcAviso(t) {
 
 // Titulo de um bloco da busca curada ("Para as Noivas" + quantas pecas ha). So texto.
 function tgBlocoTitulo(titulo, total, tag) {
-  return el(tag || 'div', { 'class': 'tg-busca-bloco-titulo' }, [el('span', null, [titulo]), el('span', { 'class': 'tg-busca-bloco-qtd' }, [total + (total === 1 ? ' peça' : ' peças')])]);
+  return el(tag || 'div', { 'class': 'tg-busca-bloco-titulo' }, [el('span', null, [titulo])]);
 }
 
 // Esgotado nominal (REL-04): a(s) peca(s) esgotada(s) marcada(s) "Grade esgotada" e, abaixo, as parecidas com grade cheia (o Best Seller do tipo primeiro).
 // Mesmos cuidados do resto: so texto, link normal para a PDP, "Ver todos" para a busca da pagina com o que foi digitado.
 function tgAcPintarEsgotado(caixa, consulta, res) {
-  var e = res.esgotado, extra = { esgotado: true }, grupos = [[e.itens.length === 1 ? 'Peça esgotada' : 'Peças esgotadas', e.itens], ['Opções parecidas com grade completa', e.similares]];
+  var e = res.esgotado, extra = { esgotado: true }, grupos = [[e.itens.length === 1 ? 'Peça esgotada' : 'Peças esgotadas', e.itens], ['Opções parecidas com todos os tamanhos', e.similares]];
   var blocos = [], n = 0, g, i, li, lis, todos, total;
   for (g = 0; g < grupos.length; g++) {
     lis = [];
@@ -3287,10 +3553,10 @@ function tgAcPintarEsgotado(caixa, consulta, res) {
     caixa.classList.remove('tg-busca-oculto');
     return;
   }
-  caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Grade esgotada para ', el('strong', null, [consulta]), '. Veja opções parecidas com grade completa.']));
+  caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Tamanho esgotado para ', el('strong', null, [consulta]), '. Veja opções parecidas com todos os tamanhos.']));
   for (i = 0; i < blocos.length; i++) { caixa.appendChild(blocos[i]); }
   total = n;
-  todos = el('a', { 'class': 'tg-busca-todos', href: urlBusca(consulta) }, ['Ver todos os resultados (' + total + ')']);
+  todos = el('a', { 'class': 'tg-busca-todos', href: urlBusca(consulta) }, ['Ver todos os resultados']);
   todos.addEventListener('click', function () {
     tgRecSalvar(consulta);
     try { emitir('tg_busca_ver_todos', { query_len: consulta.length, results_count: total, rescue_type: 'esgotado' }); } catch (err) {}
@@ -3301,7 +3567,7 @@ function tgAcPintarEsgotado(caixa, consulta, res) {
 
 // "res.termos" (opcional, calculado por tgAcDesenhar): sugestoes de termo no topo, antes das pecas.
 function tgAcPintar(pegarCaixa, input, consulta, res) {
-  var linhas = [], blocos = [], i, b, li, lis, ul, todos, sugerido, botao, caixa = pegarCaixa(), extra, total, termoTodos;
+  var linhas = [], blocos = [], i, b, li, lis, ul, todos, sugerido, botao, caixa = pegarCaixa(), extra, total, termoTodos, porNome, termosBloco;
   if (!caixa) { return; }
   tgAcLimpar(caixa);
   if (res.esgotado) { tgAcPintarEsgotado(caixa, consulta, res); return; }
@@ -3330,18 +3596,20 @@ function tgAcPintar(pegarCaixa, input, consulta, res) {
     caixa.classList.remove('tg-busca-oculto');
     return;
   }
-  if (res.termos && res.termos.length && !res.curada) { caixa.appendChild(tgAcTermosBloco(res.termos, consulta, input, pegarCaixa)); }
+  // busca pelo nome da peca (84% das buscas): as pecas vem antes das sugestoes, que ficam em no maximo 2
+  porNome = !!res.suggestedTerm && !res.curada;
+  termosBloco = res.termos && res.termos.length && !res.curada ? tgAcTermosBloco(porNome ? res.termos.slice(0, 2) : res.termos, consulta, input, pegarCaixa) : null;
+  if (termosBloco && !porNome) { caixa.appendChild(termosBloco); }
   if (res.tamanho) { caixa.appendChild(tgAcAviso(res.tamanho)); }
-  if (res.suggestedTerm) {
-    sugerido = res.suggestedTerm;
+  // so avisa quando a grafia foi corrigida de verdade, com o nome do modelo (sem a cor): nao prende a busca numa cor so.
+  // O "Buscando por: Vestidos" do grupo saiu: repetia o que esta no campo.
+  if (res.suggestedTerm && tgAcCorrigiu(consulta, res.suggestedTerm)) {
+    sugerido = typeof tgModeloCor === 'function' ? (tgModeloCor(res.suggestedTerm).modelo || res.suggestedTerm) : res.suggestedTerm;
     botao = el('button', { type: 'button', 'class': 'tg-busca-sugerido' }, [sugerido]);
     botao.addEventListener('click', function () {
       try { input.value = sugerido; tgAcDesenhar(pegarCaixa, input, sugerido); } catch (e) {}
     });
-    caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Buscando por: ', botao]));
-  } else if (res.buscandoPor && typeof res.buscandoPor === 'string') {
-    // so o grupo digitado: o "Buscando por" fica no grupo (Vestidos), sem sugerir uma peca em particular
-    caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Buscando por: ', el('strong', null, [res.buscandoPor])]));
+    caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Mostrando resultados para ', botao]));
   }
   if (res.curada) {
     for (i = 0; i < blocos.length; i++) { caixa.appendChild(blocos[i]); }
@@ -3350,12 +3618,13 @@ function tgAcPintar(pegarCaixa, input, consulta, res) {
     ul = el('ul', { 'class': 'tg-busca-lista' }, linhas);
     caixa.appendChild(ul);
   }
+  if (termosBloco && porNome) { caixa.appendChild(termosBloco); }
   // "Ver todos": a busca da pagina nao filtra por tamanho, entao na busca por tamanho o link leva so o texto sem o tamanho ("vestido g" -> /search/?q=vestido).
   // Se so sobrou o tamanho ("tam g"), nao ha busca nativa equivalente: o botao nao aparece (a lista acima ja mostra as pecas do tamanho).
   termoTodos = res.tamanho ? (res.tamanho.texto || '') : consulta;
   total = res.curada ? res.curada.total : res.results.length;
   if (termoTodos) {
-    todos = el('a', { 'class': 'tg-busca-todos', href: urlBusca(termoTodos) }, ['Ver todos os resultados (' + total + ')']);
+    todos = el('a', { 'class': 'tg-busca-todos', href: urlBusca(termoTodos) }, ['Ver todos os resultados']);
     todos.addEventListener('click', function () {
       var ev = { query_len: consulta.length, results_count: total };
       if (res.curada) { ev.rescue_type = 'curada'; }
@@ -3455,6 +3724,17 @@ function tgTapetePreencher(holder, cat) {
 function tgAcVazio(caixa) {
   var chips = tgChipsLista('overlay'), rec = tgRecLer(), lis = [], i, limpar, topo, holder;
   tgAcLimpar(caixa);
+  // buscas recentes no topo (no maximo 3), antes de Em alta e do tapete: quem volta para comparar acha a busca de ontem sem rolar
+  if (rec.length) {
+    limpar = el('button', { type: 'button', 'class': 'tg-busca-limpar' }, ['Limpar']);
+    limpar.addEventListener('click', function () { tgRecLimpar(); tgAcVazio(caixa); });
+    topo = el('div', { 'class': 'tg-busca-secao-titulo tg-busca-recentes-topo' }, [el('span', null, ['Buscas recentes']), limpar]);
+    caixa.appendChild(topo);
+    for (i = 0; i < rec.length && i < 3; i++) {
+      lis.push(el('li', null, [el('a', { 'class': 'tg-busca-termo', href: urlBusca(rec[i]) }, [el('span', { 'class': 'tg-busca-ico-lupa', 'aria-hidden': 'true' }), el('span', { 'class': 'tg-busca-termo-texto' }, [rec[i]])])]));
+    }
+    caixa.appendChild(el('ul', { 'class': 'tg-busca-recentes' }, lis));
+  }
   if (chips) {
     caixa.appendChild(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Em alta']));
     caixa.appendChild(chips);
@@ -3462,17 +3742,6 @@ function tgAcVazio(caixa) {
   holder = el('div', { 'class': 'tg-busca-tapete' });
   caixa.appendChild(holder);
   try { if (typeof obterCatalogo === 'function') { obterCatalogo().then(function (cat) { if (cat) { tgTapetePreencher(holder, cat); } })['catch'](function () {}); } } catch (e) {}
-  if (rec.length) {
-    limpar = el('button', { type: 'button', 'class': 'tg-busca-limpar' }, ['Limpar']);
-    limpar.addEventListener('click', function () { tgRecLimpar(); tgAcVazio(caixa); });
-    topo = el('div', { 'class': 'tg-busca-secao-titulo tg-busca-recentes-topo' }, ['Buscas recentes']);
-    caixa.appendChild(topo);
-    for (i = 0; i < rec.length; i++) {
-      lis.push(el('li', null, [el('a', { 'class': 'tg-busca-termo', href: urlBusca(rec[i]) }, [el('span', { 'class': 'tg-busca-ico-lupa', 'aria-hidden': 'true' }), el('span', { 'class': 'tg-busca-termo-texto' }, [rec[i]])])]));
-    }
-    caixa.appendChild(el('ul', { 'class': 'tg-busca-recentes' }, lis));
-    caixa.appendChild(limpar);
-  }
   if (!chips && !rec.length) { caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Digite o tipo da peça, o nome ou a cor.'])); }
   caixa.classList.remove('tg-busca-oculto');
 }
@@ -3484,6 +3753,13 @@ function tgAcStatus(texto) {
 
 // Desenha a resposta para o que esta no campo. Com o overlay aberto, campo curto mostra o estado vazio; fora dele, esconde a caixa.
 // O catalogo e baixado so na primeira interacao (L6).
+// Houve correcao de grafia de verdade? Cada palavra digitada (3+ letras) precisa aparecer no nome sugerido; se alguma nao aparece, o motor corrigiu.
+function tgAcCorrigiu(consulta, sugerido) {
+  var q = normalizeText(consulta).split(' '), s = ' ' + normalizeText(sugerido) + ' ', i;
+  for (i = 0; i < q.length; i++) { if (q[i].length >= 3 && s.indexOf(q[i]) < 0) { return true; } }
+  return false;
+}
+
 function tgAcDesenhar(pegarCaixa, input, consulta) {
   var existente, caixa;
   if (consulta.length < TG_AC_MIN) {
@@ -3498,7 +3774,7 @@ function tgAcDesenhar(pegarCaixa, input, consulta) {
     function desenhar(res) {
       if (!res.esgotado && !res.curada) { res.termos = tgAcTermos(consulta, cat); }
       tgAcPintar(pegarCaixa, input, consulta, res);
-      tgAcStatus(res.esgotado ? 'Grade esgotada. Veja opções parecidas.' : (res.results.length + (res.results.length === 1 ? ' peça encontrada' : ' peças encontradas')));
+      tgAcStatus(res.esgotado ? 'Tamanho esgotado. Veja opções parecidas.' : 'Peças encontradas.');
     }
     // Esgotado nominal: so quando a palavra pedida nao casa com nenhuma peca em estoque (tgPrecisaEsgotados). O catalogo de esgotados e baixado
     // uma vez, sob demanda; se falhar (ou demorar mais que o limite), a busca de sempre aparece, sem nenhum aviso.
@@ -3523,8 +3799,8 @@ function tgOvMontar() {
   var raiz, painel, form, voltar, campo, limpar, enviar, corpo, caixa, status, espera = null;
   injetarEstilos();
   campo = el('input', { type: 'search', 'class': 'tg-busca-ov-campo', 'aria-label': 'Buscar peças' });
-  tgAttr(campo, { name: 'q', placeholder: 'O que você procura?', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'search', inputmode: 'search', maxlength: '200' });
-  voltar = el('button', { type: 'button', 'class': 'tg-busca-ov-btn tg-busca-ov-voltar', 'aria-label': 'Fechar a busca' }, ['‹']);
+  tgAttr(campo, { name: 'q', placeholder: 'Busque pelo nome, tipo ou cor', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'search', inputmode: 'search', maxlength: '200' });
+  voltar = el('button', { type: 'button', 'class': 'tg-busca-ov-btn tg-busca-ov-voltar', 'aria-label': 'Fechar a busca' }, [el('span', { 'class': 'tg-busca-ico-voltar', 'aria-hidden': 'true' })]);
   limpar = el('button', { type: 'button', 'class': 'tg-busca-ov-btn tg-busca-ov-limpar tg-busca-oculto', 'aria-label': 'Limpar o campo' }, ['×']);
   enviar = el('button', { type: 'submit', 'class': 'tg-busca-ov-btn tg-busca-ov-enviar', 'aria-label': 'Buscar' }, [el('span', { 'class': 'tg-busca-ico-lupa', 'aria-hidden': 'true' })]);
   form = el('form', { 'class': 'tg-busca-ov-form', role: 'search' }, [voltar, campo, limpar, enviar]);
@@ -3544,6 +3820,8 @@ function tgOvMontar() {
     espera = setTimeout(function () { try { tgAcDesenhar(tgOv.pegarCaixa, campo, v); } catch (e) {} }, TG_AC_ESPERA);
   }
   tgOv.atualizar = atualizar;
+  // o teclado desce quando a cliente rola a lista (as pecas ficam a vista)
+  corpo.addEventListener('touchmove', function () { try { if (document.activeElement === campo) { campo.blur(); } } catch (e) {} }, { passive: true });
   campo.addEventListener('input', function () { try { atualizar(false); } catch (e) {} });
   voltar.addEventListener('click', function () { try { tgOvFechar(); } catch (e) {} });
   limpar.addEventListener('click', function () { try { campo.value = ''; atualizar(true); campo.focus(); } catch (e) {} });
@@ -3658,8 +3936,8 @@ var TG_PG_LIMITE = 1000;  // a pagina de resultados recebe a lista inteira; os c
 var TG_PG_LOTE = 24;
 var TG_PG_ESCONDE_NATIVO = true;
 var TG_PG_BEST_MAX = 8;   // Best Sellers por categoria: quantas pecas em cada "Mais Vendidos em ..."
-var TG_PG_BOLINHAS_MAX = 6;
-var TG_PG_ORDENS = [['relevancia', 'Relevância'], ['melhores-ofertas', 'Melhores Ofertas'], ['lancamentos', 'Lançamentos'], ['best-sellers', 'Best Sellers']];
+var TG_PG_BOLINHAS_MAX = 5; // 5 bolinhas de 22px + o "+N" cabem numa linha do card de 2 colunas no celular (auditoria A16)
+var TG_PG_ORDENS = [['relevancia', 'Relevância'], ['melhores-ofertas', 'Melhores Ofertas'], ['lancamentos', 'Lançamentos'], ['best-sellers', 'Mais Vendidos']];
 var TG_PG_TAM_ORDEM = ['XPP', 'PP', 'P', 'M', 'G', 'GG', 'XG', 'XGG', 'U'];
 var tgCorConhecidas = null;
 
@@ -3708,7 +3986,7 @@ function tgRgAdicionar(item, rotulo) {
         t = v.tamanhos[i];
         if (t && String(t.rotulo).trim().toUpperCase() === alvo) {
           if (!t.disponivel || !t.variantId) { return { ok: false, semTamanho: true }; }
-          return Promise.resolve(tgAdicionarSacola(t.variantId, 1)).then(function (r) { return { ok: !!(r && r.ok) }; });
+          return Promise.resolve(tgAdicionarSacola(t.variantId, 1, { abrirSacola: false })).then(function (r) { return { ok: !!(r && r.ok) }; });
         }
       }
       return { ok: false, semTamanho: true };
@@ -3796,8 +4074,8 @@ function tgRgCompra(p, card, estado, op) {
   function falhou(texto) {
     ocupado = false;
     tgTexto(add, 'Adicionar');
-    tgTexto(msg, texto);
-    if (href) { setTimeout(function () { try { window.location.assign(href); } catch (e) {} }, 1100); }
+    tgTexto(msg, texto + ' ');
+    if (href) { msg.appendChild(el('a', { href: href }, ['Abrir a peça'])); }
   }
   add.addEventListener('click', function () {
     if (ocupado) { return; }
@@ -3813,13 +4091,13 @@ function tgRgCompra(p, card, estado, op) {
       if (r && r.ok) {
         ocupado = false;
         add.classList.add('tg-busca-add-ok');
-        tgTexto(add, 'Adicionado');
+        tgTexto(add, 'Adicionado ✓');
         try { emitir('tg_busca_add_card', { position: op.posicao || 0 }); } catch (e) {}
         setTimeout(function () { try { add.classList.remove('tg-busca-add-ok'); tgTexto(add, 'Adicionar'); } catch (e2) {} }, 2200);
         return;
       }
-      falhou(r && r.semTamanho ? 'Esse tamanho acabou. Abrindo a peça…' : 'Não deu para adicionar aqui. Abrindo a peça…');
-    })['catch'](function () { falhou('Não deu para adicionar aqui. Abrindo a peça…'); });
+      falhou(r && r.semTamanho ? 'Esse tamanho acabou.' : 'Não conseguimos adicionar aqui.');
+    })['catch'](function () { falhou('Não conseguimos adicionar aqui.'); });
   });
   return [el('div', { 'class': 'tg-busca-tams', role: 'group', 'aria-label': 'Tamanhos em estoque' }, tams), add, msg];
 }
@@ -3832,7 +4110,7 @@ function tgRgCard(p, info, tamanhos, op) {
   op = op || {};
   esgotada = !!op.esgotada || !tgDisponivel(p);
   selo = info === undefined ? null : tgAcSelo(p, info);
-  if (!selo && info !== undefined && esgotada) { selo = tgAcSelo(p, { tipo: 'esgotado', texto: typeof TG_SELO_ESGOTADO !== 'undefined' ? TG_SELO_ESGOTADO : 'Grade esgotada' }); }
+  if (!selo && info !== undefined && esgotada) { selo = tgAcSelo(p, { tipo: 'esgotado', texto: typeof TG_SELO_ESGOTADO !== 'undefined' ? TG_SELO_ESGOTADO : 'Tamanho esgotado' }); }
   imagem = foto(p, 'tg-busca-thumb') || el('span', { 'class': 'tg-busca-thumb' });
   card = el('div', { 'class': esgotada && (op.esgotada || info !== undefined) ? 'tg-busca-card tg-busca-card-esgotado' : 'tg-busca-card' });
   estado = { escolhido: null };
@@ -3903,7 +4181,7 @@ function tgCuMontar(res) {
 // Esgotado nominal na pagina /search (REL-04): a(s) peca(s) com a tarja "Grade esgotada" e, em outra secao, as parecidas com
 // grade cheia (o Best Seller do tipo primeiro). So texto; o link dos cards e o da PDP de sempre. Devolve true se montou.
 function tgRgMontarEsgotado(q, res) {
-  var e = res.esgotado, secoes = [], total = 0, grupos = [[e.itens.length === 1 ? 'Peça esgotada' : 'Peças esgotadas', e.itens], ['Opções parecidas com grade completa', e.similares]];
+  var e = res.esgotado, secoes = [], total = 0, grupos = [[e.itens.length === 1 ? 'Peça esgotada' : 'Peças esgotadas', e.itens], ['Opções parecidas com todos os tamanhos', e.similares]];
   var g, i, c, cards, destino, caixa, nativo, mapa = tgGruposCores(e.similares);
   for (g = 0; g < grupos.length; g++) {
     cards = [];
@@ -3919,8 +4197,8 @@ function tgRgMontarEsgotado(q, res) {
   if (!total) { return false; }
   caixa = el('div', { id: 'tg-busca-resgate', 'class': 'tg-busca-zero container' }, [
     tgConselheira(),
-    el('div', { 'class': 'tg-busca-zero-titulo' }, ['Grade esgotada para "' + q + '"']),
-    el('div', { 'class': 'tg-busca-zero-desc' }, ['Veja a peça e, abaixo, opções parecidas com grade completa para envio imediato:'])
+    el('div', { 'class': 'tg-busca-zero-titulo' }, ['Tamanho esgotado para "' + q + '"']),
+    el('div', { 'class': 'tg-busca-zero-desc' }, ['Veja a peça e, abaixo, opções parecidas com todos os tamanhos para envio imediato:'])
   ].concat(secoes));
   destino = tgRgDestino();
   if (!destino) { return false; }
@@ -3940,6 +4218,7 @@ function tgRgForm(q) {
   tgAttr(campo, { name: 'q', value: q, placeholder: 'Buscar outra peça', autocomplete: 'off', maxlength: '200' });
   form = el('form', { 'class': 'tg-busca-zero-form', role: 'search' }, [campo, el('button', { type: 'submit', 'class': 'tg-busca-zero-ok' }, ['Buscar'])]);
   tgAttr(form, { action: '/search/', method: 'get' });
+  campo.addEventListener('focus', function () { try { if (typeof tgOvAbrir === 'function') { campo.blur(); tgOvAbrir(campo.value); } } catch (e) {} });
   return form;
 }
 
@@ -3973,11 +4252,11 @@ function tgRgMontar(q, cat, esg) {
     descTopo = el('div', { 'class': 'tg-busca-zero-desc' }, ['Você quis dizer: ', el('a', { href: urlBusca(res.suggestedTerm) }, [res.suggestedTerm]), '?']);
   } else {
     tipo = 'campeoes';
-    descGrade = el('div', { 'class': 'tg-busca-zero-desc' }, [res.tamanho && res.tamanho.aplicado ? 'Confira as peças no tamanho ' + res.tamanho.rotulo + ' disponíveis para envio imediato:' : 'Confira os Best Sellers disponíveis para envio imediato:']);
+    descGrade = el('div', { 'class': 'tg-busca-zero-desc' }, [res.tamanho && res.tamanho.aplicado ? 'Confira as peças no tamanho ' + res.tamanho.rotulo + ' disponíveis para envio imediato:' : 'Confira os Mais Vendidos disponíveis para envio imediato:']);
   }
   proximos = tgRgTermosProximos(q, cat);
   chips = tgChipsLista('zero');
-  filhos = [tgConselheira(), el('div', { 'class': 'tg-busca-zero-titulo' }, ['Não encontramos peças com o termo exato "' + q + '"']), descTopo, tgRgForm(q), proximos];
+  filhos = [tgConselheira(), el('div', { 'class': 'tg-busca-zero-titulo' }, ['Não encontramos “' + q + '”']), descTopo, tgRgForm(q), proximos];
   if (chips) { filhos.push(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Em alta'])); filhos.push(chips); }
   filhos.push(descGrade);
   filhos.push(el('div', { 'class': 'tg-busca-grade' }, cards));
@@ -4190,7 +4469,7 @@ function tgPgMontar(q, cat, res) {
     }
     est.mostrados = fim;
     // so aparece se ainda ha pecas para mostrar (e diz quantas); sem mais pecas o botao nao existe
-    if (fim < est.atual.length) { tgTexto(mais, 'Ver mais ' + (est.atual.length - fim) + (est.atual.length - fim === 1 ? ' peça' : ' peças')); mais.classList.remove('tg-busca-oculto'); } else { mais.classList.add('tg-busca-oculto'); }
+    if (fim < est.atual.length) { tgTexto(mais, 'Ver mais peças'); mais.classList.remove('tg-busca-oculto'); } else { mais.classList.add('tg-busca-oculto'); }
   }
   // "Mais Vendidos em Vestidos / Blusas / Calças": no Best Sellers sem grupo definido a lista vira uma secao por categoria (as mais vendidas de cada)
   function secoesBest(lista) {
@@ -4205,7 +4484,7 @@ function tgPgMontar(q, cat, res) {
     return out.length ? out : null;
   }
   function tituloCaso(t) {
-    return String(t || '').trim().slice(0, 60).split(/\s+/).map(function (w) { return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(); }).join(' ');
+    return String(t || '').trim().slice(0, 60).split(/\s+/).map(function (w, i) { w = w.toLowerCase(); return i && /^(de|da|do|das|dos|e|em|com|para|no|na)$/.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1); }).join(' ');
   }
   // "Você está buscando por: Vestidos" (ou o que foi digitado, ou grupo + chip)
   function pintarTitulo() {
@@ -4440,12 +4719,14 @@ function tgPgMontar(q, cat, res) {
   });
 
   if (res.tamanho) { aviso = tgAcAviso(res.tamanho); }
+  else if (!grupoQ && !tgPgCasaNome(q, itens.slice(0, 6))) { aviso = el('div', { 'class': 'tg-busca-aviso-nome', role: 'status' }, ['Não encontramos “' + String(q).trim().slice(0, 60) + '”. Veja peças com nome parecido:']); }
   var precisaNov = urlLer();
   filhos = [tgConselheira(), voce, aviso, barra, chipsLinha, grade, vazio, mais];
   raiz = el('section', { id: 'tg-busca-resultados', 'class': 'tg-busca-pagina', 'aria-label': 'Resultados da busca' }, filhos);
   injetarEstilos();
   desenhar();
   destino.insertBefore(raiz, destino.firstChild || null);
+  tgPgTopoBarra(raiz);
   if (precisaNov) {
     tgPgNovidades().then(function (h) { est.handles = h; if (!h.length) { est.novidades = false; } desenhar(); });
   }
@@ -4461,6 +4742,33 @@ function tgPgMontar(q, cat, res) {
   } catch (e) {}
   emitir('tg_busca_pagina_view', { results_count: itens.length, page_type: 'search' });
   return true;
+}
+
+// Alguma palavra digitada (3+ letras) aparece no texto das primeiras pecas? Se nenhuma aparece, a lista e "parecida", nao o que foi pedido.
+function tgPgCasaNome(q, itens) {
+  var ws = normalizeText(q).split(' ').filter(function (w) { return w.length >= 3; }), i, j, k, txt, v;
+  if (!ws.length || !itens.length) { return true; }
+  for (i = 0; i < itens.length; i++) {
+    txt = '';
+    for (k in itens[i]) { if (Object.prototype.hasOwnProperty.call(itens[i], k)) { v = itens[i][k]; if (typeof v === 'string') { txt += ' ' + v; } else if (Array.isArray(v)) { txt += ' ' + v.join(' '); } } }
+    txt = ' ' + normalizeText(txt) + ' ';
+    for (j = 0; j < ws.length; j++) { if (txt.indexOf(ws[j]) >= 0) { return true; } }
+  }
+  return false;
+}
+
+// Altura do cabecalho fixo do tema (fixo ou grudado no topo), para a barra de filtros parar logo abaixo dele. Sem cabecalho fixo, fica em 0.
+function tgPgTopoBarra(raiz) {
+  try {
+    var hs = document.querySelectorAll('.js-head-main, header, .head-main'), i, cs, r, h = 0;
+    for (i = 0; i < hs.length; i++) {
+      cs = window.getComputedStyle(hs[i]);
+      if (cs.position !== 'fixed' && cs.position !== 'sticky') { continue; }
+      r = hs[i].getBoundingClientRect();
+      if (r.top <= 1 && r.height > 0 && r.height < 160) { h = Math.max(h, Math.round(r.bottom)); }
+    }
+    if (h > 0) { raiz.style.setProperty('--tgb-barra-topo', h + 'px'); }
+  } catch (e) {}
 }
 
 // Esgotado nominal pela pagina de resultados: true se montou a tela de esgotada + parecidas.
@@ -4518,6 +4826,7 @@ function ligarResgate() {
     seguir(cat, null);
   })['catch'](function () {}).then(function () { if (resultados) { devolverNativa(); } tgPend(false); });
 }
+
 
 return { ligarAutocomplete: ligarAutocomplete, ligarResgate: ligarResgate };
 }
@@ -5740,13 +6049,13 @@ function tgAcAviso(t) {
 
 // Titulo de um bloco da busca curada ("Para as Noivas" + quantas pecas ha). So texto.
 function tgBlocoTitulo(titulo, total, tag) {
-  return el(tag || 'div', { 'class': 'tg-busca-bloco-titulo' }, [el('span', null, [titulo]), el('span', { 'class': 'tg-busca-bloco-qtd' }, [total + (total === 1 ? ' peça' : ' peças')])]);
+  return el(tag || 'div', { 'class': 'tg-busca-bloco-titulo' }, [el('span', null, [titulo])]);
 }
 
 // Esgotado nominal (REL-04): a(s) peca(s) esgotada(s) marcada(s) "Grade esgotada" e, abaixo, as parecidas com grade cheia (o Best Seller do tipo primeiro).
 // Mesmos cuidados do resto: so texto, link normal para a PDP, "Ver todos" para a busca da pagina com o que foi digitado.
 function tgAcPintarEsgotado(caixa, consulta, res) {
-  var e = res.esgotado, extra = { esgotado: true }, grupos = [[e.itens.length === 1 ? 'Peça esgotada' : 'Peças esgotadas', e.itens], ['Opções parecidas com grade completa', e.similares]];
+  var e = res.esgotado, extra = { esgotado: true }, grupos = [[e.itens.length === 1 ? 'Peça esgotada' : 'Peças esgotadas', e.itens], ['Opções parecidas com todos os tamanhos', e.similares]];
   var blocos = [], n = 0, g, i, li, lis, todos, total;
   for (g = 0; g < grupos.length; g++) {
     lis = [];
@@ -5761,10 +6070,10 @@ function tgAcPintarEsgotado(caixa, consulta, res) {
     caixa.classList.remove('tg-busca-oculto');
     return;
   }
-  caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Grade esgotada para ', el('strong', null, [consulta]), '. Veja opções parecidas com grade completa.']));
+  caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Tamanho esgotado para ', el('strong', null, [consulta]), '. Veja opções parecidas com todos os tamanhos.']));
   for (i = 0; i < blocos.length; i++) { caixa.appendChild(blocos[i]); }
   total = n;
-  todos = el('a', { 'class': 'tg-busca-todos', href: urlBusca(consulta) }, ['Ver todos os resultados (' + total + ')']);
+  todos = el('a', { 'class': 'tg-busca-todos', href: urlBusca(consulta) }, ['Ver todos os resultados']);
   todos.addEventListener('click', function () {
     tgRecSalvar(consulta);
     try { emitir('tg_busca_ver_todos', { query_len: consulta.length, results_count: total, rescue_type: 'esgotado' }); } catch (err) {}
@@ -5829,7 +6138,7 @@ function tgAcPintar(pegarCaixa, input, consulta, res) {
   termoTodos = res.tamanho ? (res.tamanho.texto || '') : consulta;
   total = res.curada ? res.curada.total : res.results.length;
   if (termoTodos) {
-    todos = el('a', { 'class': 'tg-busca-todos', href: urlBusca(termoTodos) }, ['Ver todos os resultados (' + total + ')']);
+    todos = el('a', { 'class': 'tg-busca-todos', href: urlBusca(termoTodos) }, ['Ver todos os resultados']);
     todos.addEventListener('click', function () {
       var ev = { query_len: consulta.length, results_count: total };
       if (res.curada) { ev.rescue_type = 'curada'; }
@@ -5885,7 +6194,7 @@ function tgAcDesenhar(pegarCaixa, input, consulta) {
     function desenhar(res) {
       if (!res.esgotado && !res.curada) { res.termos = tgAcTermos(consulta, cat); }
       tgAcPintar(pegarCaixa, input, consulta, res);
-      tgAcStatus(res.esgotado ? 'Grade esgotada. Veja opções parecidas.' : (res.results.length + (res.results.length === 1 ? ' peça encontrada' : ' peças encontradas')));
+      tgAcStatus(res.esgotado ? 'Tamanho esgotado. Veja opções parecidas.' : 'Peças encontradas.');
     }
     // Esgotado nominal: so quando a palavra pedida nao casa com nenhuma peca em estoque (tgPrecisaEsgotados). O catalogo de esgotados e baixado
     // uma vez, sob demanda; se falhar (ou demorar mais que o limite), a busca de sempre aparece, sem nenhum aviso.
@@ -6043,7 +6352,7 @@ var TG_PG_LIMITE = 1000;  // a pagina de resultados recebe a lista inteira; os c
 var TG_PG_LOTE = 24;
 var TG_PG_ESCONDE_NATIVO = true;
 var TG_PG_BOLINHAS_MAX = 6;
-var TG_PG_ORDENS = [['relevancia', 'Relevância'], ['melhores-ofertas', 'Melhores Ofertas'], ['lancamentos', 'Lançamentos'], ['best-sellers', 'Best Sellers']];
+var TG_PG_ORDENS = [['relevancia', 'Relevância'], ['melhores-ofertas', 'Melhores Ofertas'], ['lancamentos', 'Lançamentos'], ['best-sellers', 'Mais Vendidos']];
 var TG_PG_TAM_ORDEM = ['XPP', 'PP', 'P', 'M', 'G', 'GG', 'XG', 'XGG', 'U'];
 var tgCorConhecidas = null;
 
@@ -6216,7 +6525,7 @@ function tgRgCard(p, info, tamanhos, op) {
   op = op || {};
   esgotada = !!op.esgotada || !tgDisponivel(p);
   selo = info === undefined ? null : tgAcSelo(p, info);
-  if (!selo && info !== undefined && esgotada) { selo = tgAcSelo(p, { tipo: 'esgotado', texto: typeof TG_SELO_ESGOTADO !== 'undefined' ? TG_SELO_ESGOTADO : 'Grade esgotada' }); }
+  if (!selo && info !== undefined && esgotada) { selo = tgAcSelo(p, { tipo: 'esgotado', texto: typeof TG_SELO_ESGOTADO !== 'undefined' ? TG_SELO_ESGOTADO : 'Tamanho esgotado' }); }
   imagem = foto(p, 'tg-busca-thumb') || el('span', { 'class': 'tg-busca-thumb' });
   card = el('div', { 'class': esgotada && (op.esgotada || info !== undefined) ? 'tg-busca-card tg-busca-card-esgotado' : 'tg-busca-card' });
   estado = { escolhido: null };
@@ -6283,7 +6592,7 @@ function tgCuMontar(res) {
 // Esgotado nominal na pagina /search (REL-04): a(s) peca(s) com a tarja "Grade esgotada" e, em outra secao, as parecidas com
 // grade cheia (o Best Seller do tipo primeiro). So texto; o link dos cards e o da PDP de sempre. Devolve true se montou.
 function tgRgMontarEsgotado(q, res) {
-  var e = res.esgotado, secoes = [], total = 0, grupos = [[e.itens.length === 1 ? 'Peça esgotada' : 'Peças esgotadas', e.itens], ['Opções parecidas com grade completa', e.similares]];
+  var e = res.esgotado, secoes = [], total = 0, grupos = [[e.itens.length === 1 ? 'Peça esgotada' : 'Peças esgotadas', e.itens], ['Opções parecidas com todos os tamanhos', e.similares]];
   var g, i, c, cards, destino, caixa, nativo, mapa = tgGruposCores(e.similares);
   for (g = 0; g < grupos.length; g++) {
     cards = [];
@@ -6299,8 +6608,8 @@ function tgRgMontarEsgotado(q, res) {
   if (!total) { return false; }
   caixa = el('div', { id: 'tg-busca-resgate', 'class': 'tg-busca-zero container' }, [
     tgConselheira(),
-    el('div', { 'class': 'tg-busca-zero-titulo' }, ['Grade esgotada para "' + q + '"']),
-    el('div', { 'class': 'tg-busca-zero-desc' }, ['Veja a peça e, abaixo, opções parecidas com grade completa para envio imediato:'])
+    el('div', { 'class': 'tg-busca-zero-titulo' }, ['Tamanho esgotado para "' + q + '"']),
+    el('div', { 'class': 'tg-busca-zero-desc' }, ['Veja a peça e, abaixo, opções parecidas com todos os tamanhos para envio imediato:'])
   ].concat(secoes));
   destino = tgRgDestino();
   if (!destino) { return false; }
@@ -6353,7 +6662,7 @@ function tgRgMontar(q, cat, esg) {
     descTopo = el('div', { 'class': 'tg-busca-zero-desc' }, ['Você quis dizer: ', el('a', { href: urlBusca(res.suggestedTerm) }, [res.suggestedTerm]), '?']);
   } else {
     tipo = 'campeoes';
-    descGrade = el('div', { 'class': 'tg-busca-zero-desc' }, [res.tamanho && res.tamanho.aplicado ? 'Confira as peças no tamanho ' + res.tamanho.rotulo + ' disponíveis para envio imediato:' : 'Confira os Best Sellers disponíveis para envio imediato:']);
+    descGrade = el('div', { 'class': 'tg-busca-zero-desc' }, [res.tamanho && res.tamanho.aplicado ? 'Confira as peças no tamanho ' + res.tamanho.rotulo + ' disponíveis para envio imediato:' : 'Confira os Mais Vendidos disponíveis para envio imediato:']);
   }
   proximos = tgRgTermosProximos(q, cat);
   chips = tgChipsLista('zero');
@@ -6799,6 +7108,7 @@ function ligarResgate() {
     seguir(cat, null);
   })['catch'](function () {}).then(function () { if (resultados) { devolverNativa(); } });
 }
+
 
 return { ligarAutocomplete: ligarAutocomplete, ligarResgate: ligarResgate };
 }

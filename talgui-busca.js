@@ -55,6 +55,24 @@ function levenshtein(a, b, maxDist) {
   return prev[bl];
 }
 
+// Palavra de cor no masculino (preta -> preto, branca -> branco); qualquer outra palavra volta igual.
+function tgGenero(w) {
+  return Object.prototype.hasOwnProperty.call(TG_MODELO_COR_GENERO, w) ? TG_MODELO_COR_GENERO[w] : w;
+}
+// Formas no masculino da tabela (preto, branco...); preenchidas logo depois de TG_MODELO_COR_GENERO, mais abaixo no arquivo.
+var TG_GENERO_ALVOS = {};
+
+// Troca de duas letras vizinhas ("vsetido" = "vestido", "fromatura" = "formatura"): conta como 1 erro de digitacao (distancia de Damerau).
+// So a troca: mesmo tamanho, uma posicao trocada com a seguinte e o resto igual. O levenshtein acima continua o mesmo (paridade da Fase 1).
+function tgUmaTroca(a, b) {
+  var n = a.length, i = 0;
+  if (n < 2 || n !== b.length || a === b) return false;
+  while (i < n && a.charAt(i) === b.charAt(i)) i++;
+  if (i >= n - 1) return false;
+  if (a.charAt(i) !== b.charAt(i + 1) || a.charAt(i + 1) !== b.charAt(i)) return false;
+  return a.slice(i + 2) === b.slice(i + 2);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Estoque, selos, cores, tamanhos e categorias (quick 20261116-ajustes-previa-ux7). Tudo calculado do catálogo já carregado, sem campo novo.
 // ---------------------------------------------------------------------------------------------------------------------
@@ -296,7 +314,7 @@ function tgSinonimoCategoria(qt) {
   if (Object.prototype.hasOwnProperty.call(TG_CATEGORIA_SINONIMOS, qt)) return { cat: TG_CATEGORIA_SINONIMOS[qt], exato: true };
   if (qt.length < 6) return null;
   for (k in TG_CATEGORIA_SINONIMOS) {
-    if (Object.prototype.hasOwnProperty.call(TG_CATEGORIA_SINONIMOS, k) && k.length >= 6 && levenshtein(qt, k, 1) <= 1) return { cat: TG_CATEGORIA_SINONIMOS[k], exato: false };
+    if (Object.prototype.hasOwnProperty.call(TG_CATEGORIA_SINONIMOS, k) && k.length >= 6 && (levenshtein(qt, k, 1) <= 1 || tgUmaTroca(qt, k))) return { cat: TG_CATEGORIA_SINONIMOS[k], exato: false };
   }
   return null;
 }
@@ -441,6 +459,7 @@ function tgPontuar(qTokens, normQ, catalog, prep) {
     const iCor = qCor ? prep.cores.get(item) : null;
     const mesmoGrupo = !!(iCor && iCor.g === qCor.g);
     let outrosTotal = 0, outrosCasou = 0; // palavras da busca que não são a cor
+    let minPts = 99; // o acerto mais fraco entre as palavras da busca (0 = alguma nao casou); so a busca com intencao usa
 
     for (let t = 0; t < qTokens.length; t++) {
       const qt = qTokens[t];
@@ -448,10 +467,13 @@ function tgPontuar(qTokens, normQ, catalog, prep) {
       const ql = qt.length;
       let matched = false;
       let maxPts = 0;
+      // cor no masculino: "preta" = "preto" vale como acerto exato (25/11, contagem de fortes); so se a palavra da busca e uma dessas cores
+      const qGen = tgGenero(qt);
+      const qEhGen = qGen !== qt || TG_GENERO_ALVOS[qt] === true;
 
       for (let n = 0; n < nTokens.length; n++) {
         const nt = nTokens[n];
-        if (nt === qt) {
+        if (nt === qt || (qEhGen && tgGenero(nt) === qGen)) {
           maxPts = Math.max(maxPts, 12);
           matched = true;
           break;
@@ -461,7 +483,8 @@ function tgPontuar(qTokens, normQ, catalog, prep) {
         } else {
           const maxD = ql <= 4 ? 1 : 2;
           const d = levenshtein(qt, nt, maxD);
-          if (d === 1) { maxPts = Math.max(maxPts, 7); matched = true; }
+          // troca de letras vizinhas ("vsetido") vale como 1 erro, igual a uma letra errada (QA 25/11, item 1.2)
+          if (d === 1 || (d > 1 && ql >= 4 && tgUmaTroca(qt, nt))) { maxPts = Math.max(maxPts, 7); matched = true; }
           else if (d === 2 && ql >= 5) { maxPts = Math.max(maxPts, 4); matched = true; }
         }
       }
@@ -498,6 +521,7 @@ function tgPontuar(qTokens, normQ, catalog, prep) {
         if (matched) outrosCasou++;
       }
 
+      minPts = Math.min(minPts, matched ? maxPts : 0);
       if (matched) {
         tokenScore += maxPts;
         matchedCount++;
@@ -521,7 +545,9 @@ function tgPontuar(qTokens, normQ, catalog, prep) {
         item: item, score: score,
         d: tgDisponivel(item) ? 1 : 0,
         tp: !qCor || outrosTotal === 0 || outrosCasou === outrosTotal ? 1 : 0,
-        cr: qCor ? tgRankCor(iCor, qCor) : 0
+        cr: qCor ? tgRankCor(iCor, qCor) : 0,
+        mp: minPts,
+        cg: !qCor || mesmoGrupo ? 1 : 0 // a busca nao tem cor de grupo, ou a peca e do grupo da cor pedida
       });
     }
   }
@@ -816,6 +842,9 @@ function tgPrecisaEsgotados(query, catalogo) {
   if (!q || q.length < 2 || !catalogo || !catalogo.length) return false;
   qTokens = q.split(' ').filter(Boolean);
   if (tgTamanhoDaConsulta(qTokens) || tgCuradaDaConsulta(qTokens)) return false;
+  // promocao, ocasiao, grupo, conjunto ou palavra generica: a busca nunca pede esgotado por essas palavras (so pelo que sobra)
+  var det = tgIntencaoDaConsulta(qTokens, tgPreparar(catalogo));
+  if (det) qTokens = det.resto;
   nominais = tgNominaisDaConsulta(qTokens);
   if (!nominais.length) return false;
   return Object.keys(tgNominaisSemEstoque(nominais, catalogo, tgPreparar(catalogo))).length > 0;
@@ -971,10 +1000,391 @@ function tgBuscaEsgotado(qTokens, catalogo, prep, esgotados, limite) {
     else if (prep.ofertas.get(sim.itens[k])) selos.set(sim.itens[k], prep.ofertas.get(sim.itens[k]));
   }
   res = {
-    results: itens.concat(sim.itens), suggestedTerm: null, selos: selos, tamanho: null,
+    results: itens.concat(sim.itens), suggestedTerm: null, selos: selos, tamanho: null, fortes: itens.length, fortesTotal: itens.length,
     esgotado: { itens: itens, similares: sim.itens, melhor: sim.melhor, tipo: rank[0].e.tipo, nominais: Object.keys(semEstoque) }
   };
   return res;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Intencao da busca (QA do Danilo, 25/11, itens 1.1, 1.4 e 1.5). Palavras de promocao, ocasiao, estacao, grupo de peca e conjunto sao
+// reconhecidas ANTES do erro de digitacao, para nunca virarem nome de modelo ou cor: "verao" nao e a Calca Vera, "oferta" nao e o Macacao Ofelia,
+// "black november" nao e a Calca Blair, "natal" nao e a Natalia, "festa" nao e "fenda", "roupa de baixo" nao e "rosa".
+// Como funciona:
+//   1. Cada palavra da busca e comparada com os termos das tabelas abaixo: igual sempre vale; comeco de termo (5+ letras, "promo", "forma") e
+//      1 erro de digitacao (6+ letras, inclusive troca de letras vizinhas) so valem se a palavra NAO existe (nem como comeco) em nenhum nome do
+//      catalogo. Assim o nome de uma peca nunca e engolido por uma intencao.
+//   2. Com intencao, as palavras de ligacao (de, para, com...) e as genericas (roupa, peca, parte, look...) saem; o que sobra ("vestido" em
+//      "vestido promocao") estreita a selecao pela pontuacao de sempre. Se o que sobra nao casa com nenhuma peca da selecao, vale a busca comum
+//      dessas palavras.
+//   3. Sem intencao, mas com palavra generica (roupa, peca, parte, moda): ela sai da busca. So ela ("roupa") = mais vendidos.
+//   4. Casamento, madrinha, noiva e convidada continuam na busca curada (TG_BUSCAS_CURADAS e tgSelecaoVestidos); nada aqui muda isso.
+// O resultado traz intencao: { tipo, id, titulo, total, resto, aplicado } para a tela mostrar um titulo ("Peças em promoção").
+// ---------------------------------------------------------------------------------------------------------------------
+
+// Promocao: pecas com preco promocional (pp < p), da maior % de desconto para a menor e, no empate, a mais vendida (b) primeiro.
+var TG_INTENCAO_PROMO = {
+  id: 'promocao', titulo: 'Peças em promoção',
+  termos: ['promocao', 'promocoes', 'promo', 'promos', 'oferta', 'ofertas', 'desconto', 'descontos', 'sale', 'liquidacao', 'liquida', 'queima',
+    'black', 'friday', 'blackfriday', 'november', 'novembro', 'blacknovember', 'cyber', 'barato', 'barata', 'baratos', 'baratas', 'baratinho', 'saldao']
+};
+
+// Conjunto (item 1.4): pecas de cima e de baixo (nunca vestido, macacao ou macaquinho). A tela mostra os pares reais do Recom; aqui o motor
+// devolve 1) pecas com "Conjunto"/"Kit" no comeco do nome, 2) pares de peca de cima + peca de baixo da mesma familia de cor com 3+ tamanhos em comum,
+// 3) o resto das pecas de cima e de baixo, intercaladas. Sem nenhuma peca de cima ou de baixo, vale o sinonimo antigo (Look Inteiro).
+var TG_INTENCAO_CONJUNTO = {
+  id: 'conjunto', titulo: 'Conjuntos',
+  termos: ['conjunto', 'conjuntos', 'conjuntinho', 'conjuntinhos'],
+  frases: [['look', 'completo'], ['looks', 'completos'], ['look', 'combinando'], ['looks', 'combinando'], ['looks', 'completo']],
+  nomes: ['conjunto', 'conjuntos', 'kit'],
+  cima: ['blusa', 'blusas', 'cropped', 'croppeds', 'regata', 'regatas', 'corset', 'camisa', 'body', 'top', 'colete', 'blazer'],
+  baixo: ['calca', 'calcas', 'saia', 'saias', 'shorts', 'short', 'bermuda']
+};
+
+// Grupos de peca: "roupa de baixo", "partes de baixo", "peca de cima"... (tipo = 1a palavra do nome, sem acento). Ordem = mais vendidas.
+var TG_INTENCAO_GRUPOS = [
+  { id: 'partes-de-baixo', titulo: 'Partes de baixo', termos: ['baixo'], tipos: ['calca', 'calcas', 'saia', 'saias', 'shorts', 'short', 'bermuda'] },
+  { id: 'partes-de-cima', titulo: 'Partes de cima', termos: ['cima'], tipos: ['blusa', 'blusas', 'cropped', 'croppeds', 'regata', 'regatas', 'corset', 'camisa', 'body', 'top', 'colete', 'blazer'] }
+];
+
+// OCASIOES E ESTACOES. PROPOSTA para o Danilo validar (o catalogo ainda nao tem tags de ocasiao; quando tiver, a tag entra aqui).
+// Para ajustar, basta editar a tabela. Campos:
+//   id, titulo   identificador e titulo que a tela pode mostrar
+//   termos       palavras que ativam (minusculas, sem acento); frases = varias palavras em sequencia (["ano", "novo"])
+//   faixas       lista em ordem de prioridade. A peca entra na PRIMEIRA faixa que aceitar. Faixa:
+//                  tipos    tipos de peca aceitos (1a palavra do nome: vestido, blusa, calca, saia, shorts, cropped, regata, macacao, camisa...);
+//                           sem tipos = qualquer peca
+//                  nome     palavras (ou frases) que precisam estar no nome
+//                  cores    cores aceitas (a cor do fim do nome, no masculino: 'vermelho', 'off white', 'verde militar'); "verde" NAO inclui
+//                           "verde claro" (cada tom e escrito a parte)
+//                           com nome E cores, basta um dos dois; sem nenhum dos dois, todo o tipo entra
+//                  prefira  palavras que sobem a peca dentro da faixa (nao filtram)
+//   excluir      palavras do nome que tiram a peca da ocasiao
+//   intercalar   true = as faixas se alternam (1a da faixa 1, 1a da faixa 2, ...); false = faixa 1 inteira antes da 2
+// Dentro de cada faixa: mais palavras de "prefira" primeiro, depois a ordem do catalogo (= mais vendidas). Peca sem estoque nunca entra.
+var TG_OCASIOES = [
+  { id: 'festa', titulo: 'Para festas', termos: ['festa', 'festas', 'balada', 'baladas', 'evento', 'eventos'],
+    faixas: [
+      { tipos: ['vestido'], nome: ['longo', 'longa', 'maxi', 'midi', 'veludo', 'tule', 'cetim', 'acetinado', 'acetinada', 'brilho', 'paete', 'lurex', 'fenda',
+        'tomara que caia', 'um ombro', 'assimetrico', 'assimetrica'], prefira: ['longo', 'longa', 'veludo', 'tule', 'cetim', 'brilho', 'paete', 'fenda'] },
+      { tipos: ['vestido'] }
+    ],
+    excluir: ['malha', 'tricoline', 'moletom', 'jeans'] },
+  { id: 'formatura', titulo: 'Para formatura', termos: ['formatura', 'formaturas', 'colacao', 'baile', 'gala'],
+    faixas: [
+      { tipos: ['vestido'], nome: ['longo', 'longa', 'maxi'] },
+      { tipos: ['vestido'], nome: ['midi'], prefira: ['veludo', 'tule', 'cetim', 'acetinado', 'fenda', 'um ombro', 'tomara que caia', 'alfaiataria'] }
+    ],
+    excluir: ['malha', 'tricoline', 'moletom', 'jeans', 'curto', 'mini'] },
+  { id: 'reveillon', titulo: 'Para o Réveillon', termos: ['reveillon', 'reveilon', 'reveion', 'virada'], frases: [['ano', 'novo'], ['fim', 'de', 'ano']],
+    faixas: [
+      { tipos: ['vestido'], cores: ['off white', 'branco', 'white'] },
+      { cores: ['off white', 'branco', 'white'] },
+      { cores: ['dourado', 'prata'] }
+    ] },
+  { id: 'natal', titulo: 'Para o Natal', termos: ['natal', 'natalino', 'natalina', 'natalinos', 'natalinas', 'ceia'],
+    faixas: [
+      { tipos: ['vestido'], cores: ['vermelho', 'verde', 'verde militar', 'verde floresta', 'verde esmeralda', 'verde musgo', 'verde oliva', 'dourado', 'vinho'], nome: ['veludo'], prefira: ['veludo'] },
+      { cores: ['vermelho', 'verde', 'verde militar', 'verde floresta', 'verde esmeralda', 'verde musgo', 'verde oliva', 'dourado', 'vinho'], nome: ['veludo'], prefira: ['veludo'] }
+    ] },
+  { id: 'jantar', titulo: 'Para um jantar', termos: ['jantar', 'jantares', 'restaurante', 'encontro'],
+    faixas: [
+      { tipos: ['vestido'], nome: ['midi', 'curto', 'mini'], prefira: ['alfaiataria', 'veludo', 'crepe'] },
+      { tipos: ['blusa', 'calca', 'saia', 'colete', 'blazer', 'cropped', 'corset', 'shorts', 'camisa'], nome: ['alfaiataria'] }
+    ],
+    excluir: ['moletom'], intercalar: true },
+  { id: 'trabalho', titulo: 'Para o trabalho', termos: ['trabalho', 'trabalhar', 'escritorio', 'office', 'corporativo', 'corporativa', 'social', 'reuniao', 'entrevista', 'executiva'],
+    faixas: [
+      { tipos: ['calca', 'blusa', 'camisa', 'colete', 'blazer', 'saia', 'vestido'], nome: ['alfaiataria'] },
+      { tipos: ['camisa', 'calca', 'blusa', 'colete', 'blazer'] }
+    ],
+    excluir: ['tule', 'veludo', 'paete', 'brilho', 'tomara que caia'] },
+  // Estacoes (proposta): pecas leves no verao, veludo/manga longa/blazer no inverno.
+  { id: 'verao', titulo: 'Para o verão', termos: ['verao', 'praia', 'calor', 'ferias', 'resort'],
+    faixas: [
+      { tipos: ['vestido'], nome: ['curto', 'mini', 'tricoline', 'viscolinho', 'linho', 'alca', 'alcas', 'alcinha'] },
+      { tipos: ['shorts', 'short', 'regata', 'cropped', 'body', 'top'] },
+      { tipos: ['blusa', 'saia', 'macaquinho'], nome: ['tricoline', 'viscolinho', 'linho', 'manga curta', 'alca', 'alcas', 'alcinha', 'regata', 'tomara que caia'] }
+    ],
+    excluir: ['veludo', 'manga longa', 'tricot', 'trico', 'moletom'], intercalar: true },
+  { id: 'inverno', titulo: 'Para o inverno', termos: ['inverno', 'frio'],
+    faixas: [
+      { nome: ['veludo', 'manga longa', 'tricot', 'trico'] },
+      { tipos: ['blazer', 'jaqueta', 'casaco'] }
+    ] }
+];
+
+// Palavras que saem da busca quando ha intencao. As "genericas" tambem saem sem intencao ("roupa preta" = "preta"); "look" so sai com intencao.
+var TG_INTENCAO_LIGACAO = ['de', 'da', 'do', 'das', 'dos', 'para', 'pra', 'pro', 'e', 'a', 'o', 'as', 'os', 'um', 'uma', 'com', 'em', 'na', 'no', 'nas', 'nos'];
+var TG_INTENCAO_GENERICAS = ['roupa', 'roupas', 'roupinha', 'roupinhas', 'peca', 'pecas', 'pecinha', 'pecinhas', 'parte', 'partes', 'moda'];
+var TG_INTENCAO_NEUTRAS = TG_INTENCAO_GENERICAS.concat(['look', 'looks', 'feminina', 'feminino', 'femininas', 'femininos', 'mulher', 'mulheres', 'estoque']);
+var TG_INTENCAO_GENERICO_TITULO = 'Mais vendidos';
+
+// Todas as intencoes, na ordem de prioridade (a 1a que casar com a palavra fica com ela).
+function tgListaIntencoes() {
+  var out = [{ tipo: 'conjunto', def: TG_INTENCAO_CONJUNTO }], i;
+  for (i = 0; i < TG_INTENCAO_GRUPOS.length; i++) out.push({ tipo: 'grupo', def: TG_INTENCAO_GRUPOS[i] });
+  for (i = 0; i < TG_OCASIOES.length; i++) out.push({ tipo: 'ocasiao', def: TG_OCASIOES[i] });
+  out.push({ tipo: 'promo', def: TG_INTENCAO_PROMO });
+  return out;
+}
+
+// A palavra existe inteira, ou como comeco, em algum nome do catalogo? (uma vez por palavra e catalogo)
+function tgPalavraDoCatalogo(tok, prep) {
+  var lista, i, achou = false;
+  if (!prep) return false;
+  if (!prep.palavraCat) prep.palavraCat = {};
+  if (Object.prototype.hasOwnProperty.call(prep.palavraCat, tok)) return prep.palavraCat[tok];
+  if (prep.vocab[tok]) achou = true;
+  else {
+    lista = prep.vocabLista || (prep.vocabLista = Object.keys(prep.vocab));
+    for (i = 0; i < lista.length; i++) { if (lista[i].indexOf(tok) === 0) { achou = true; break; } }
+  }
+  prep.palavraCat[tok] = achou;
+  return achou;
+}
+
+// A palavra digitada vale pelo termo? Igual sempre; comeco (5+ letras) e 1 erro (6+ letras) so se a palavra nao for de nenhum nome do catalogo.
+function tgCasaTermo(tok, termo, prep) {
+  if (tok === termo) return true;
+  if (tok.length < 5) return false;
+  if (tgPalavraDoCatalogo(tok, prep)) return false;
+  if (termo.length > tok.length && termo.indexOf(tok) === 0) return true;
+  if (tok.length >= 6 && termo.length >= 6 && (levenshtein(tok, termo, 1) <= 1 || tgUmaTroca(tok, termo))) return true;
+  return false;
+}
+
+// Intencoes de uma busca (palavras ja normalizadas e sem o tamanho). prep (opcional) liga a protecao dos nomes do catalogo.
+// Devolve null (nada a fazer) ou { achadas: [{ tipo, def }], resto: [palavras que sobram], genericas: n }.
+function tgIntencaoDaConsulta(qTokens, prep) {
+  var lista = tgListaIntencoes(), usados = [], achadas = [], resto = [], genericas = 0, i, k, j, f, n, ok, t;
+  function anotar(x) { if (achadas.indexOf(x) < 0) achadas.push(x); }
+  for (i = 0; i < qTokens.length; i++) usados.push(false);
+  for (k = 0; k < lista.length; k++) {
+    if (!lista[k].def.frases) continue;
+    for (j = 0; j < lista[k].def.frases.length; j++) {
+      f = lista[k].def.frases[j];
+      for (i = 0; i + f.length <= qTokens.length; i++) {
+        ok = true;
+        for (n = 0; n < f.length; n++) { if (usados[i + n] || qTokens[i + n] !== f[n]) { ok = false; break; } }
+        if (!ok) continue;
+        for (n = 0; n < f.length; n++) usados[i + n] = true;
+        anotar(lista[k]);
+      }
+    }
+  }
+  for (i = 0; i < qTokens.length; i++) {
+    t = qTokens[i];
+    if (usados[i] || TG_INTENCAO_LIGACAO.indexOf(t) >= 0 || TG_INTENCAO_NEUTRAS.indexOf(t) >= 0) continue;
+    for (k = 0; k < lista.length && !usados[i]; k++) {
+      for (j = 0; j < lista[k].def.termos.length; j++) {
+        if (tgCasaTermo(t, lista[k].def.termos[j], prep)) { usados[i] = true; anotar(lista[k]); break; }
+      }
+    }
+  }
+  for (i = 0; i < qTokens.length; i++) { if (TG_INTENCAO_GENERICAS.indexOf(qTokens[i]) >= 0) genericas++; }
+  if (!achadas.length && !genericas) return null;
+  for (i = 0; i < qTokens.length; i++) {
+    t = qTokens[i];
+    if (usados[i] || TG_INTENCAO_LIGACAO.indexOf(t) >= 0 || TG_INTENCAO_NEUTRAS.indexOf(t) >= 0) continue;
+    resto.push(t);
+  }
+  return { achadas: achadas, resto: resto, genericas: genericas };
+}
+
+// Texto de comparacao de uma peca: tipo (1a palavra), nome com as cores no masculino (' blusa benita preto ') e a cor do fim do nome.
+function tgInfoIntencao(it, prep) {
+  var info, tk, i, cor;
+  if (!prep.infoInt) prep.infoInt = new Map();
+  info = prep.infoInt.get(it);
+  if (info) return info;
+  tk = normalizeText(it.n).replace(/\boffwhite\b/g, 'off white').split(' ');
+  for (i = 0; i < tk.length; i++) { if (Object.prototype.hasOwnProperty.call(TG_MODELO_COR_GENERO, tk[i])) tk[i] = TG_MODELO_COR_GENERO[tk[i]]; }
+  cor = tgPalavrasCor(tgModeloCor(it.n).cor).map(function (w) { return TG_MODELO_COR_GENERO[w] || w; }).join(' ');
+  info = { tipo: tk[0] || '', txt: ' ' + tk.join(' ') + ' ', cor: cor };
+  prep.infoInt.set(it, info);
+  return info;
+}
+function tgTemAlguma(info, lista) {
+  var i;
+  if (!lista) return false;
+  for (i = 0; i < lista.length; i++) { if (info.txt.indexOf(' ' + lista[i] + ' ') >= 0) return true; }
+  return false;
+}
+function tgContaAlgumas(info, lista) {
+  var i, n = 0;
+  if (!lista) return 0;
+  for (i = 0; i < lista.length; i++) { if (info.txt.indexOf(' ' + lista[i] + ' ') >= 0) n++; }
+  return n;
+}
+function tgCorCasa(info, cores) {
+  var i;
+  if (!cores) return false;
+  for (i = 0; i < cores.length; i++) {
+    if (info.cor ? info.cor === cores[i] : info.txt.indexOf(' ' + cores[i] + ' ') >= 0) return true;
+  }
+  return false;
+}
+function tgFaixaCasa(info, f) {
+  if (f.tipos && f.tipos.indexOf(info.tipo) < 0) return false;
+  if (!f.nome && !f.cores) return true;
+  return tgTemAlguma(info, f.nome) || tgCorCasa(info, f.cores);
+}
+
+// Selecao (ordenada) de uma intencao no catalogo; uma vez por catalogo e intencao.
+function tgPoolIntencao(x, catalog, prep) {
+  var chave = x.tipo + ':' + x.def.id, out;
+  if (!prep.poolInt) prep.poolInt = {};
+  if (prep.poolInt[chave]) return prep.poolInt[chave];
+  if (x.tipo === 'promo') out = tgPoolPromo(catalog);
+  else if (x.tipo === 'grupo') out = catalog.filter(function (it) { return it && typeof it.n === 'string' && tgDisponivel(it) && x.def.tipos.indexOf(tgInfoIntencao(it, prep).tipo) >= 0; });
+  else if (x.tipo === 'conjunto') out = tgPoolConjunto(x.def, catalog, prep);
+  else out = tgPoolOcasiao(x.def, catalog, prep);
+  prep.poolInt[chave] = out;
+  return out;
+}
+function tgPoolPromo(catalog) {
+  var v = [], i, it;
+  for (i = 0; i < catalog.length; i++) { it = catalog[i]; if (it && typeof it.n === 'string' && tgDisponivel(it) && tgDesconto(it) > 0) v.push({ it: it, d: tgDesconto(it), pos: i }); }
+  v.sort(function (a, b) { return (b.d - a.d) || ((b.it.b || 0) - (a.it.b || 0)) || (a.pos - b.pos); });
+  return v.map(function (x) { return x.it; });
+}
+function tgPoolConjunto(def, catalog, prep) {
+  var nomeados = [], cima = [], baixo = [], out = [], usados = new Set(), i, it, tipo, fa, k, b, ri, rj;
+  for (i = 0; i < catalog.length; i++) {
+    it = catalog[i];
+    if (!it || typeof it.n !== 'string' || !tgDisponivel(it)) continue;
+    tipo = tgInfoIntencao(it, prep).tipo;
+    if (def.nomes.indexOf(tipo) >= 0) nomeados.push(it);
+    else if (def.cima.indexOf(tipo) >= 0) cima.push({ it: it, f: tgFamiliaCor(it) });
+    else if (def.baixo.indexOf(tipo) >= 0) baixo.push({ it: it, f: tgFamiliaCor(it) });
+  }
+  out = nomeados.slice();
+  // pares: peca de cima (na ordem de vendas) + a peca de baixo mais vendida ainda livre da mesma familia de cor, com 3+ tamanhos em comum
+  for (i = 0; i < cima.length; i++) {
+    fa = cima[i].f;
+    if (!fa) continue;
+    for (k = 0; k < baixo.length; k++) {
+      b = baixo[k];
+      if (usados.has(b.it) || !b.f || b.f.chave !== fa.chave) continue;
+      if (tgTapeteComuns(cima[i].it.sz, b.it.sz).length < TG_TAPETE_MIN_TAMANHOS) continue;
+      out.push(cima[i].it, b.it); usados.add(cima[i].it); usados.add(b.it);
+      break;
+    }
+  }
+  // o resto, intercalado (cima, baixo, cima...)
+  for (ri = 0, rj = 0; ri < cima.length || rj < baixo.length;) {
+    while (ri < cima.length && usados.has(cima[ri].it)) ri++;
+    if (ri < cima.length) { out.push(cima[ri].it); ri++; }
+    while (rj < baixo.length && usados.has(baixo[rj].it)) rj++;
+    if (rj < baixo.length) { out.push(baixo[rj].it); rj++; }
+  }
+  return out;
+}
+function tgPoolOcasiao(def, catalog, prep) {
+  var faixas = def.faixas || [], por = [], i, k, it, info, termoNoNome, out = [], rodada, algum;
+  for (k = 0; k < faixas.length; k++) por.push([]);
+  for (i = 0; i < catalog.length; i++) {
+    it = catalog[i];
+    if (!it || typeof it.n !== 'string' || !tgDisponivel(it)) continue;
+    info = tgInfoIntencao(it, prep);
+    if (tgTemAlguma(info, def.excluir)) continue;
+    for (k = 0; k < faixas.length; k++) {
+      if (!tgFaixaCasa(info, faixas[k])) continue;
+      termoNoNome = tgTemAlguma(info, def.termos) ? 100 : 0; // peca com a propria palavra no nome ("Vestido Festa") vem na frente
+      por[k].push({ it: it, pts: termoNoNome + tgContaAlgumas(info, faixas[k].prefira), pos: i });
+      break;
+    }
+  }
+  for (k = 0; k < por.length; k++) por[k].sort(function (a, b) { return (b.pts - a.pts) || (a.pos - b.pos); });
+  if (def.intercalar) {
+    for (rodada = 0; ; rodada++) {
+      algum = false;
+      for (k = 0; k < por.length; k++) { if (por[k].length > rodada) { out.push(por[k][rodada].it); algum = true; } }
+      if (!algum) break;
+    }
+  } else {
+    for (k = 0; k < por.length; k++) for (i = 0; i < por[k].length; i++) out.push(por[k][i].it);
+  }
+  return out;
+}
+
+// Resultado da busca com intencao, ou null (sem intencao: segue o caminho de sempre). Mesmo formato do runSearch, mais "intencao".
+function tgBuscaIntencao(query, qTokens, catalog, prep, limit, tam, aceitos, textoSemTam, esgotados) {
+  var det = tgIntencaoDaConsulta(qTokens, prep), prim = null, pool, outros, i, k, lista, pontuados, casou, base, consultaResto, info, tamanho = null, comTam, top, ofertas;
+  if (!det) return null;
+  consultaResto = det.resto.concat(tam ? tam.tamanhos.map(function (x) { return x.toLowerCase(); }) : []).join(' ');
+  if (!det.achadas.length) {
+    // so palavra generica: "roupa preta" = "preta"; "roupa" sozinha = mais vendidas
+    if (det.resto.length) { base = tgBuscaBase(consultaResto, catalog, limit, esgotados); base.query = query; return base; }
+    pool = catalog.filter(function (it) { return it && typeof it.n === 'string' && tgDisponivel(it); });
+    info = { tipo: 'generico', id: 'generico', titulo: TG_INTENCAO_GENERICO_TITULO };
+  } else {
+    for (i = 0; i < det.achadas.length && !prim; i++) { if (det.achadas[i].tipo !== 'promo') prim = det.achadas[i]; }
+    if (!prim) prim = det.achadas[0];
+    pool = tgPoolIntencao(prim, catalog, prep);
+    // outras intencoes juntas ("festa promocao") filtram a selecao principal; se nada sobra, fica so a principal
+    outros = pool;
+    for (k = 0; k < det.achadas.length; k++) {
+      if (det.achadas[k] === prim) continue;
+      outros = (function (set) { return outros.filter(function (it) { return set.has(it); }); })(new Set(tgPoolIntencao(det.achadas[k], catalog, prep)));
+    }
+    if (outros.length) pool = outros;
+    if (!pool.length && prim.tipo === 'conjunto') return null; // catalogo sem peca de cima/baixo: vale o sinonimo antigo (Look Inteiro)
+    info = { tipo: prim.tipo, id: prim.def.id, titulo: prim.def.titulo };
+  }
+  lista = pool;
+  if (det.resto.length) {
+    pontuados = tgPontuar(det.resto, det.resto.join(' '), pool, prep);
+    // so a melhor faixa de acerto que existir: 1) todas as palavras iguais ou comeco (8+), 2) ate 1 erro, categoria ou cor (5+), 3) qualquer.
+    // Assim "conjunto preto" nao traz "reta" (2 erros) e "roupa de baixo preta" nao traz "Reta ... Marrom" (1 erro) quando ha peca preta de verdade.
+    k = pontuados.filter(function (s) { return s.mp >= 8; });
+    if (!k.length) k = pontuados.filter(function (s) { return s.mp >= 5; });
+    if (k.length) pontuados = k;
+    casou = new Set(pontuados.map(function (s) { return s.item; }));
+    lista = pool.filter(function (it) { return casou.has(it); });
+    if (!lista.length) {
+      // o resto nao existe na selecao ("body promocao" sem body em promocao): vale a busca comum do resto
+      base = tgBuscaBase(consultaResto, catalog, limit, esgotados);
+      base.query = query;
+      base.intencao = { tipo: info.tipo, id: info.id, titulo: info.titulo, total: 0, resto: det.resto.join(' '), aplicado: false };
+      return base;
+    }
+  }
+  if (tam) {
+    comTam = lista.filter(function (it) { return tgTemTamanho(it, aceitos); });
+    if (comTam.length) lista = comTam;
+    tamanho = { pedido: tam.tamanhos, aplicado: comTam.length > 0, texto: textoSemTam, rotulo: tam.tamanhos.join(' ou '), aceitos: Object.keys(aceitos) };
+  }
+  top = lista.slice(0, limit);
+  ofertas = tamanho && tamanho.aplicado ? tgOfertasDoTamanho(catalog, prep, aceitos) : prep.ofertas;
+  info.total = lista.length;
+  info.resto = det.resto.join(' ');
+  info.aplicado = true;
+  return { query: query, results: top, suggestedTerm: null, buscandoPor: null, selos: tgSelosDaBusca(top, prep, ofertas), tamanho: tamanho, fortes: top.length, fortesTotal: lista.length, intencao: info };
+}
+
+// So pelo texto (sem catalogo, sem a protecao dos nomes): a intencao principal da busca, ou null. Para a tela decidir o titulo antes do resultado.
+// Devolve { tipo: 'promo' | 'ocasiao' | 'grupo' | 'conjunto' | 'generico', id, titulo }.
+function tgIntencaoDaBusca(q, catalog) {
+  var n = normalizeText(q), t, tam, det, i, prim = null;
+  if (!n || n.length < 2) return null;
+  t = n.split(' ').filter(Boolean);
+  tam = tgTamanhoDaConsulta(t);
+  if (tam) t = tam.resto;
+  if (!t.length || tgCuradaDaConsulta(t)) return null;
+  det = tgIntencaoDaConsulta(t, Array.isArray(catalog) && catalog.length ? tgPreparar(catalog) : null);
+  if (!det) return null;
+  if (!det.achadas.length) return det.resto.length ? null : { tipo: 'generico', id: 'generico', titulo: TG_INTENCAO_GENERICO_TITULO };
+  for (i = 0; i < det.achadas.length && !prim; i++) { if (det.achadas[i].tipo !== 'promo') prim = det.achadas[i]; }
+  if (!prim) prim = det.achadas[0];
+  return { tipo: prim.tipo, id: prim.def.id, titulo: prim.def.titulo };
+}
+
+// A busca pede conjunto? (conjunto, conjuntos, conjuntinho, look completo...; tolera comeco e 1 erro de digitacao). Usado pela tela para mostrar os pares do Recom.
+function tgEhIntencaoConjunto(q) {
+  var i = tgIntencaoDaBusca(q);
+  return !!(i && i.tipo === 'conjunto');
 }
 
 // 2. Ranqueamento e Busca em Memória
@@ -985,7 +1395,7 @@ function tgBuscaBase(query, catalog, limit, esgotados) {
   const prep = tgPreparar(catalog);
   if (!normQ || normQ.length < 2) {
     const inicio = catalog.slice(0, limit);
-    return { query: query, results: inicio, suggestedTerm: null, selos: tgSelosDaBusca(inicio, prep, prep.ofertas), tamanho: null };
+    return { query: query, results: inicio, suggestedTerm: null, selos: tgSelosDaBusca(inicio, prep, prep.ofertas), tamanho: null, fortes: inicio.length, fortesTotal: inicio.length };
   }
 
   let qTokens = normQ.split(' ').filter(Boolean);
@@ -1013,9 +1423,17 @@ function tgBuscaBase(query, catalog, limit, esgotados) {
         suggestedTerm: null,
         selos: tgSelosDaBusca(cur.flat, prep, ofertasCur),
         tamanho: tamCur,
+        fortes: cur.flat.length,
+        fortesTotal: cur.total,
         curada: { id: cur.id, blocos: cur.blocos, total: cur.total }
       };
     }
+  }
+
+  // Intencao (promocao, ocasiao, estacao, grupo, conjunto) e palavra generica (roupa, peca): antes do esgotado e do erro de digitacao (QA 25/11).
+  if (qTokens.length) {
+    const intRes = tgBuscaIntencao(query, qTokens, catalog, prep, limit, tam, aceitos, textoSemTam, esgotados);
+    if (intRes) return intRes;
   }
 
   // Esgotado nominal: só com o catálogo de esgotados já validado, sem tamanho na busca e quando a palavra pedida não casa com nenhuma peça em estoque.
@@ -1027,14 +1445,18 @@ function tgBuscaBase(query, catalog, limit, esgotados) {
   let scored;
   if (tam && !qTokens.length) {
     // só tamanho ("tam g"): todas as peças, na ordem do catálogo (ranking de vendas)
-    scored = catalog.map(function (item) { return { item: item, score: 1, d: tgDisponivel(item) ? 1 : 0, tp: 1, cr: 0 }; });
+    scored = catalog.map(function (item) { return { item: item, score: 1, d: tgDisponivel(item) ? 1 : 0, tp: 1, cr: 0, fo: 1 }; });
   } else {
     scored = tgPontuar(qTokens, normQ, catalog, prep);
+    tgMarcarFortes(scored);
   }
 
-  // Ordem: em estoque antes de esgotada; (com cor na busca) tipo completo, depois o tom (pedido, prioridade do grupo, outras); por fim a pontuação.
-  // O sort é estável: no empate vale a ordem do catálogo, como na Fase 1.
-  scored.sort((a, b) => (b.d - a.d) || (b.tp - a.tp) || (a.cr - b.cr) || (b.score - a.score));
+  // Ordem: em estoque antes de esgotada; acerto forte (ver tgMarcarFortes) antes do parecido; (com cor na busca) tipo completo, depois o tom
+  // (pedido, prioridade do grupo, outras); por fim a pontuação. O sort é estável: no empate vale a ordem do catálogo, como na Fase 1.
+  // A ordem por "fo" so vale com 2+ palavras ("vestido preto"): com 1 palavra a ordem completa continua travada na paridade da Fase 1
+  // (motor-paridade e ordem-termos-sem-cor), e la os fortes so se misturam com os parecidos bem no fundo da lista (posicao 250+ em "blusa").
+  const porForca = qTokens.length >= 2 ? 1 : 0;
+  scored.sort((a, b) => (b.d - a.d) || porForca * (b.fo - a.fo) || (b.tp - a.tp) || (a.cr - b.cr) || (b.score - a.score));
 
   let tamanho = null;
   if (tam) {
@@ -1048,13 +1470,22 @@ function tgBuscaBase(query, catalog, limit, esgotados) {
 
   const topResults = scored.slice(0, limit).map(s => s.item);
   const ofertas = tamanho && tamanho.aplicado ? tgOfertasDoTamanho(catalog, prep, aceitos) : prep.ofertas;
+  // fortes: com 2+ palavras, a sequencia de fortes em estoque no topo (eles vem primeiro); com 1 palavra, quantas pecas fortes em estoque ha
+  // (mesmo que alguma fique depois de uma parecida no fundo da lista)
+  let fortesTotal = 0, fortesTop = 0;
+  if (porForca) {
+    while (fortesTotal < scored.length && scored[fortesTotal].fo && scored[fortesTotal].d) fortesTotal++;
+    fortesTop = Math.min(fortesTotal, topResults.length);
+  } else {
+    for (let k = 0; k < scored.length; k++) { if (scored[k].fo && scored[k].d) { fortesTotal++; if (k < topResults.length) fortesTop++; } }
+  }
 
   // "Buscando por": o nome da 1ª peça, como na Fase 1. Na busca por tamanho com filtro aplicado quem fala é o aviso do tamanho (tamanho.texto + rotulo).
   let suggested = null, buscandoPor = null;
   if (topResults.length > 0 && !(tamanho && tamanho.aplicado) && normalizeText(topResults[0].n) !== normQ) {
     // so sugere a peca se a cliente digitou o comeco do nome proprio (ou grafia parecida); so o grupo vira "Vestidos" (19/11)
     if (tgCitouNomeProprio(qTokens, topResults[0])) { suggested = topResults[0].n; }
-    else if (qTokens.length === 1 && (qTokens[0] === normalizeText(topResults[0].n).split(' ')[0] || qTokens[0] === normalizeText(topResults[0].n).split(' ')[0] + 's')) { buscandoPor = tgPluralGrupo(topResults[0].n.split(' ')[0]); }
+    else if (qTokens.length === 1 && (qTokens[0] === normalizeText(topResults[0].n).split(' ')[0] || qTokens[0] === normalizeText(topResults[0].n).split(' ')[0] + 's' || tgUmaTroca(qTokens[0], normalizeText(topResults[0].n).split(' ')[0]))) { buscandoPor = tgPluralGrupo(topResults[0].n.split(' ')[0]); }
   }
 
   return {
@@ -1063,8 +1494,21 @@ function tgBuscaBase(query, catalog, limit, esgotados) {
     suggestedTerm: suggested,
     buscandoPor: buscandoPor,
     selos: tgSelosDaBusca(topResults, prep, ofertas),
-    tamanho: tamanho
+    tamanho: tamanho,
+    fortes: fortesTop,
+    fortesTotal: fortesTotal
   };
+}
+
+// Acerto forte (25/11, contador "X peças encontradas"): a peca casa com TODAS as palavras da busca (tipo, cor, nome do modelo...) e, com cor de
+// grupo na busca (azul, verde, branco, amarelo), e daquele grupo. A forca exigida e a melhor faixa que existir no resultado:
+//   1. toda palavra igual ou comeco de palavra do nome (8+ pontos; "preta" = "preto"; cor equivalente do grupo vale);
+//   2. senao, ate 1 erro de digitacao, sinonimo ou categoria (5+);   3. senao, qualquer acerto de todas as palavras.
+// Assim "vestido preto" conta so os vestidos pretos e "calca vera" so as Calcas Vera; o resto (pecas parecidas) continua na lista, depois.
+function tgMarcarFortes(scored) {
+  var tier = 1, i, s;
+  for (i = 0; i < scored.length; i++) { s = scored[i]; if (s.cg && s.mp >= 8) { tier = 8; break; } if (s.cg && s.mp >= 5) tier = 5; }
+  for (i = 0; i < scored.length; i++) { s = scored[i]; s.fo = s.cg && s.mp >= tier ? 1 : 0; }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1150,7 +1594,7 @@ function tgAlternativasSinonimos(normQ) {
 // runSearch com aneis de sinonimos. Sem palavra de anel na consulta (ou com esgotado nominal/busca curada) devolve exatamente o resultado base.
 function runSearch(query, catalog, limit, esgotados) {
   var base = tgBuscaBase(query, catalog, limit, esgotados), lim = limit || 6, normQ = normalizeText(query), alts, i, j, r, it, nome, exatos = [], sinon = [], resto = [], vistos = {}, selos, prep, final, digitada, noBase;
-  if (!normQ || normQ.length < 2 || base.esgotado || base.curada) return base;
+  if (!normQ || normQ.length < 2 || base.esgotado || base.curada || base.intencao) return base;
   alts = tgAlternativasSinonimos(normQ);
   if (!alts.length) return base;
   digitada = alts[0].digitada;
@@ -1162,7 +1606,7 @@ function runSearch(query, catalog, limit, esgotados) {
   }
   for (i = 0; i < alts.length; i++) {
     r = tgBuscaBase(alts[i].consulta, catalog, Math.max(lim, 12), esgotados);
-    if (r.esgotado || r.curada) continue;
+    if (r.esgotado || r.curada || r.intencao) continue;
     for (j = 0; j < r.results.length; j++) {
       it = r.results[j];
       if (!vistos[it.id] && tem(it, alts[i].membro)) { vistos[it.id] = 1; sinon.push(it); }
@@ -1181,7 +1625,9 @@ function runSearch(query, catalog, limit, esgotados) {
   } else { final = sinon.slice(0, lim); }
   prep = tgPreparar(catalog);
   selos = tgSelosDaBusca(final, prep, base.tamanho && base.tamanho.aplicado ? tgOfertasDoTamanho(catalog, prep, tgTamanhosAceitos(base.tamanho.aceitos || [])) : prep.ofertas);
-  return { query: base.query, results: final, suggestedTerm: null, buscandoPor: null, selos: selos, tamanho: base.tamanho };
+  // fortes: com a palavra digitada achando pecas, as do anel vem depois das fortes da base; sem nenhuma, as do anel sao o acerto
+  return { query: base.query, results: final, suggestedTerm: null, buscandoPor: null, selos: selos, tamanho: base.tamanho,
+    fortes: exatos.length ? base.fortes : final.length, fortesTotal: exatos.length ? base.fortesTotal : final.length };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1196,6 +1642,7 @@ var TG_MODELO_CORES_COMPOSTAS = ['azul bebe', 'verde oliva'];
 var TG_MODELO_CORES_TOM = ['claro', 'escuro'];
 // Feminino de cor vira o masculino (Preta = Preto). Só estas; plural nunca (lilás vira "lilas", que termina em s).
 var TG_MODELO_COR_GENERO = { preta: 'preto', branca: 'branco', amarela: 'amarelo', vermelha: 'vermelho', roxa: 'roxo', clara: 'claro', escura: 'escuro' };
+(function () { var k; for (k in TG_MODELO_COR_GENERO) { if (Object.prototype.hasOwnProperty.call(TG_MODELO_COR_GENERO, k)) TG_GENERO_ALVOS[TG_MODELO_COR_GENERO[k]] = true; } })();
 
 // Frases de cor do modelo, da mais longa para a mais curta: as de TG_COR_FRASES (compostas dos 4 grupos) + simples + "cor claro/escuro".
 var TG_MODELO_COR_FRASES = (function () {
@@ -1823,9 +2270,15 @@ function blocoPreco(item) {
   if (!pr) { return null; }
   return el('span', { 'class': 'tg-busca-preco' }, [
     el('strong', null, [reais(pr.final)]),
-    pr.de ? el('s', { 'class': 'tg-busca-de' }, [reais(pr.de)]) : null
+    pr.de ? el('s', { 'class': 'tg-busca-de' }, [reais(pr.de)]) : null,
+    linhaPix(pr.final)
   ]);
 }
+// QA 3.4 (Danilo, 25/11): o card mostra o preco no Pix (5% de desconto da loja, o mesmo que o modal le da pagina da peca), numa linha discreta
+var TG_PIX_DESCONTO = 0.05;
+// conta em centavos inteiros, meio centavo arredonda para cima (como a loja: R$89,90 -> R$85,41)
+function precoPix(v) { var n = tgNum(v), c; if (!(n > 0)) { return null; } c = Math.round(n * 100); return Math.round(c * Math.round((1 - TG_PIX_DESCONTO) * 100) / 100) / 100; }
+function linhaPix(v) { var x = precoPix(v); return x ? el('span', { 'class': 'tg-busca-pix' }, [el('span', { 'class': 'tg-busca-pix-v' }, [reais(x)]), ' no Pix']) : null; }
 
 
 /* ---- src/injetor/rastreio.js ---- */
@@ -2381,7 +2834,83 @@ var TG_CSS_PAGINA = [
     '.tg-busca-togg{display:none}' +
     '.tg-busca-chips-linha{flex-wrap:wrap;overflow:visible}' +
     '.tg-busca-todos{width:auto;min-width:300px;margin-left:auto;margin-right:auto}' +
-  '}'
+  '}',
+  // ---- v15 (Danilo, 25/11): polimento da busca inicial
+  // chips Em alta numa linha so (Vestidos, Blusas, Calcas, Conjuntos, Novidades); em tela estreita a linha rola para o lado, nunca quebra
+  '#tg-busca-overlay .tg-busca-chips-emalta{flex-wrap:nowrap;gap:6px;overflow-x:auto;margin:0 -12px;padding:0 12px 2px;scrollbar-width:none}',
+  '#tg-busca-overlay .tg-busca-chips-emalta::-webkit-scrollbar{display:none}',
+  '#tg-busca-overlay .tg-busca-chips-emalta li{flex:1 0 auto}',
+  '#tg-busca-overlay .tg-busca-chips-emalta .tg-busca-chip{width:100%;justify-content:center;min-height:34px;padding:0 7px;font-size:11.5px}',
+  // carrossel por grupo: colunas de 2 cards; a proxima coluna aparece na borda; no fim o cartao Ver todos
+  '.tg-busca-carrossel{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;overscroll-behavior-x:contain;margin:0 -12px;padding:0 12px 6px;scroll-padding-left:12px;scrollbar-width:none;-webkit-overflow-scrolling:touch}',
+  '.tg-busca-carrossel::-webkit-scrollbar{display:none}',
+  '.tg-busca-car-col{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;gap:10px;flex:0 0 90%;min-width:0;scroll-snap-align:start}',
+  '.tg-busca-car-col>.tg-busca-hc-par{gap:10px}',
+  '.tg-busca-car-col-todos{flex-basis:auto;align-content:center;padding:0 8px 0 4px}',
+  '.tg-busca-car-todos{display:flex;align-items:center;gap:10px;padding:8px 0;border:0;color:inherit;font-size:13px;line-height:1.3;white-space:nowrap;text-decoration:none}',
+  '.tg-busca-car-seta{position:relative;width:38px;height:38px;border:1px solid currentColor;border-radius:50%}',
+  '.tg-busca-car-seta::after{content:"";position:absolute;top:50%;left:50%;width:8px;height:8px;margin:-4px 0 0 -6px;border-top:1.5px solid currentColor;border-right:1.5px solid currentColor;transform:rotate(45deg)}',
+  // card da vitrine: moldura sutil e foto 20% menor; as informacoes ficam como na versao anterior (a esquerda, a partir do topo) - Danilo 25/11
+  '.tg-busca-tapete .tg-busca-hc{grid-template-columns:40% minmax(0,1fr);gap:0 11px;padding:10px;border:1px solid #e6e1da;background:var(--tgb-cor-fundo)}',
+  // nome numa linha so (Danilo, 25/11: nome longo em 2 linhas desalinhava os cards); o que nao couber termina em reticencias
+  '.tg-busca-tapete .tg-busca-hc-nome{display:block;overflow:hidden;font-size:12px;letter-spacing:-.01em;white-space:nowrap;text-overflow:ellipsis;max-width:100%}',
+  '.tg-busca-tapete .tg-busca-hc-inf{align-items:flex-start;text-align:left}',
+  '.tg-busca-tapete .tg-busca-hc .tg-busca-hc-cores{margin-top:10px}',
+  '.tg-busca-tapete .tg-busca-hc-tams{margin-top:10px}',
+  '.tg-busca-tapete button.tg-busca-hc-det{min-height:36px;margin-top:12px;padding:0 10px;font-size:12px;white-space:nowrap;gap:6px}',
+  '.tg-busca-hc-toca,.tg-busca-hc.tg-busca-hc-toca .tg-busca-hc-foto{cursor:pointer}',
+  // respiro entre os grupos 20% menor (era clamp(56px,12vh,104px))
+  '.tg-busca-tapete-secao+.tg-busca-tapete-secao{margin-top:clamp(34px,7.2vh,62px)}',
+  '.tg-busca-tapete-car>.tg-busca-tapete-todos{margin-top:12px}',
+  // "Buscando resultados": aparece no toque de um chip ou de Ver todos, enquanto a proxima pagina carrega
+  '.tg-busca-buscando{position:fixed;top:0;right:0;bottom:0;left:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:rgba(255,255,255,.94);color:var(--tgb-cor-texto);font-size:13px;letter-spacing:.08em;animation:tg-busca-surge .2s ease-out}',
+  '.tg-busca-buscando-anel{width:30px;height:30px;border:2px solid var(--tgb-cor-borda);border-top-color:var(--tgb-cor-texto);border-radius:50%;animation:tg-busca-gira .8s linear infinite}',
+  '@keyframes tg-busca-gira{to{transform:rotate(360deg)}}',
+  '@keyframes tg-busca-surge{from{opacity:0}to{opacity:1}}',
+  // ---- QA (Danilo, 25/11)
+  // 3.4: linha do Pix abaixo do preco, discreta (cabe na grade de 2 em 360 px)
+  '.tg-busca-pix{display:block;flex-basis:100%;margin-top:1px;font-size:11px;font-weight:400;line-height:1.3;color:var(--tgb-cor-texto-suave);white-space:nowrap}',
+  '.tg-busca-pix-v{font-weight:600;color:var(--tgb-cor-texto)}',
+  // 5.1: quantas pecas a busca (com os filtros) encontrou, abaixo do titulo do topo
+  '.tg-busca-contador{margin:-2px 0 14px;text-align:center;font-size:12px;color:var(--tgb-cor-texto-suave)}',
+  '.tg-busca-contador:empty{display:none}',
+  // 5.3: tamanho sem peca na combinacao atual fica apagado no menu
+  '.tg-busca-menu button.tg-busca-menu-sem{color:var(--tgb-cor-texto-suave);opacity:.45;text-decoration:line-through;cursor:default}',
+  // 4.1: celular de 360 px na grade de 2: bolinhas + o +N numa linha so, e os 6 tamanhos (XPP a GG) sem corte na borda
+  '@media (max-width:374px){body .tg-busca-grade:not(.tg-busca-grade-um) .tg-busca-card .tg-busca-cores{flex-wrap:nowrap;gap:5px}body .tg-busca-grade:not(.tg-busca-grade-um) .tg-busca-card .tg-busca-bolinha{width:16px;height:16px}body .tg-busca-grade:not(.tg-busca-grade-um) .tg-busca-card .tg-busca-bolinha-mais{width:auto;height:auto;font-size:10.5px}body .tg-busca-grade:not(.tg-busca-grade-um) .tg-busca-card .tg-busca-tams{gap:2px}body .tg-busca-grade:not(.tg-busca-grade-um) .tg-busca-card .tg-busca-tam{min-width:17px;height:19px;padding:0 1px;font-size:9px}body .tg-busca-grade:not(.tg-busca-grade-um) .tg-busca-card>:not(.tg-busca-card-midia){margin-left:6px;margin-right:6px}}',
+  // 1.4 e 4.2: os conjuntos (digitando conjunto) e as Novidades da semana (sem resultado) usam o carrossel da busca inicial
+  '.tg-busca-conj-digitado{margin:6px 0 22px}',
+  '.tg-busca-zero-nov{margin-top:22px}',
+  // ---- v15: pagina de resultados
+  // R2: tamanhos 15% menores na grade de 2 (com XPP ate GG o ultimo encostava na moldura)
+  '.tg-busca-grade:not(.tg-busca-grade-um) .tg-busca-card .tg-busca-tams{gap:3px}',
+  '.tg-busca-grade:not(.tg-busca-grade-um) .tg-busca-card .tg-busca-tam{min-width:20.5px;height:20.5px;padding:0 2px;font-size:9.8px}',
+  '.tg-busca-grade:not(.tg-busca-grade-um) .tg-busca-card .tg-busca-tams{min-height:20.5px}',
+  // R3 (Danilo, 25/11): grade de 1 coluna igual a anterior; so o VER PECA fica centralizado no card
+  '.tg-busca-grade.tg-busca-grade-um .tg-busca-card .tg-busca-add.tg-busca-ver{margin-left:auto;margin-right:auto}',
+  // R4: titulo da ordenacao junto dos cards + a grade entra de novo ao ordenar
+  '.tg-busca-ord-cab{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 6px;margin:0 0 12px;font-size:12.5px;letter-spacing:.02em;color:var(--tgb-cor-texto-suave);animation:tg-busca-surge .3s ease-out}',
+  '.tg-busca-ord-cab strong{font-weight:600;color:var(--tgb-cor-texto)}',
+  '.tg-busca-grade-nova{animation:tg-busca-renova .38s ease-out}',
+  '@keyframes tg-busca-renova{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}',
+  // R5: filtro de Cor em 3 colunas (5 por coluna), bolinha da cor ao lado do nome; os menus usam a largura da barra
+  '.tg-busca-barra-linha{position:relative}',
+  '.tg-busca-barra .tg-busca-menu-wrap{position:static}',
+  '.tg-busca-barra .tg-busca-menu-dir .tg-busca-menu{right:0}',
+  '.tg-busca-menu.tg-busca-menu-cores{left:0;right:0;min-width:0;max-height:none;padding:8px 6px;column-count:3;column-gap:4px}',
+  '.tg-busca-menu.tg-busca-menu-cores button{justify-content:flex-start;gap:8px;padding:10px 6px;font-size:13px;break-inside:avoid}',
+  '.tg-busca-menu.tg-busca-menu-cores button>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.tg-busca-menu.tg-busca-menu-cores button[aria-checked="true"]::after{margin-left:auto}',
+  '.tg-busca-menu-bolinha{width:16px;height:16px;cursor:inherit}',
+  '.tg-busca-menu-bolinha::after{display:none}',
+  // R6: gaveta ao abrir e ao fechar; a seta do botao gira
+  '.tg-busca-menu{transform-origin:top center;animation:tg-busca-gaveta .24s cubic-bezier(.2,.7,.3,1)}',
+  '.tg-busca-menu.tg-busca-menu-fechando{animation:tg-busca-gaveta-fecha .17s ease-in forwards;pointer-events:none}',
+  '@keyframes tg-busca-gaveta{from{opacity:0;transform:translateY(-6px);clip-path:inset(0 0 100% 0)}to{opacity:1;transform:none;clip-path:inset(0 0 0 0)}}',
+  '@keyframes tg-busca-gaveta-fecha{from{opacity:1;clip-path:inset(0 0 0 0)}to{opacity:0;transform:translateY(-6px);clip-path:inset(0 0 100% 0)}}',
+  '.tg-busca-barra-btn::after{transition:transform .2s ease}',
+  '.tg-busca-barra-btn[aria-expanded="true"]::after{transform:rotate(225deg) translateY(-2px)}',
+  '@media (prefers-reduced-motion:reduce){.tg-busca-buscando,.tg-busca-buscando-anel,.tg-busca-menu,.tg-busca-menu.tg-busca-menu-fechando,.tg-busca-grade-nova,.tg-busca-ord-cab{animation:none}.tg-busca-carrossel{scroll-behavior:auto}.tg-busca-barra-btn::after{transition:none}}'
 ];
 
 // Regras de cor das bolinhas, geradas da tabela TG_COR_TONS.
@@ -2431,6 +2960,8 @@ if (typeof TG_CSS === 'string') {
  * Expoe (funcoes globais da IIFE): tgQuickViewAbrir, tgQuickViewPrefetch, tgVariantesDoProduto, tgAdicionarSacola.
  * Estilos: injetados uma vez, todos sob .tg-busca-qv- e variaveis --tgb-* (padroes definidos aqui com var(--tgb-x, padrao)).
  * Os marcadores node:inicio / node:fim delimitam a exportacao para o Node; o build remove esse bloco.
+ * v15 (Danilo, 25/11): rodape escondido ate a rolagem passar do preco, Voltar entre cores, gavetas animadas, entrada/saida animadas, troca de cor
+ * como pagina virando (com volta ao topo), foto ampliada (classe tg-busca-qv-lupa) e confirmacao da sacola dentro do modal.
  */
 var TG_QV_Z = 2147483500;
 var TG_QV_TIMEOUT_MS = 6000;
@@ -2689,6 +3220,33 @@ function tgQuickViewPrefetch(item) {
 
 // ---------------------------------------------------------------- sacola (porta de store-cart.ts)
 // Abre a sacola do tema pelo MESMO toque no icone visivel (o Morelia grava a entrada de historico que o back() dele espera).
+// v15 (Danilo, 25/11): peca adicionada pelo modal NAO abre a sacola sozinha; a sacola so abre no "Ver sacola". Se a plataforma (LS.addToCartEnhanced
+// com carrinho ajax) abrir o #modal-cart por conta propria logo depois de adicionar, ele e fechado na hora (por 4 s; depois disso, ou se a cliente
+// pediu a sacola, nada e mexido).
+var tgQvSacolaPedida = 0;
+function tgQvSegurarSacola() {
+  var modal, fim, obs = null, t = 0, conferir, parar;
+  try {
+    modal = document.querySelector('#modal-cart');
+    if (!modal) { return; }
+    fim = Date.now() + 4000;
+    parar = function () { try { if (obs) { obs.disconnect(); } } catch (e) {} clearInterval(t); };
+    conferir = function () {
+      var x;
+      try {
+        if (Date.now() > fim || tgQvSacolaPedida > fim - 4000 || !modal.classList) { parar(); return; }
+        if (modal.classList.contains('modal-show')) {
+          x = modal.querySelector ? modal.querySelector('.js-modal-close') : null;
+          if (x && x.click) { x.click(); } else { modal.classList.remove('modal-show'); }
+        }
+      } catch (e) { parar(); }
+    };
+    if (typeof MutationObserver === 'function') { obs = new MutationObserver(conferir); obs.observe(modal, { attributes: true, attributeFilter: ['class'] }); }
+    t = setInterval(conferir, 150);
+    setTimeout(parar, 4100);
+    conferir();
+  } catch (e) {}
+}
 function tgAbrirSacolaDoTema() {
   try {
     var modal = document.querySelector('#modal-cart'), gatilhos, i, g, vis = null;
@@ -2715,6 +3273,8 @@ function tgQvCampo(nome, valor) {
 // Poe a peca na sacola pela funcao da propria loja (LS.addToCartEnhanced). Resolve { ok:true } ou { ok:false, motivo }.
 // So variante numerica e quantidade de 1 a 10. opcoes: { productId (senao o lembrado da leitura da pagina), abrirSacola (padrao true),
 // antesDeAbrir (funcao: o chamador fecha o proprio overlay aqui) }. Em caso de sucesso fecha o quick view aberto e SO ENTAO abre #modal-cart.
+// v15: manterQuickView (o proprio quick view confirma a sacola e oferece "Ver sacola"; nao fecha). O contador da sacola do tema e
+// atualizado pela propria LS.addToCartEnhanced.
 function tgAdicionarSacola(variantId, qtd, opcoes) {
   return new Promise(function (resolve) {
     var vid = tgQvIdOk(variantId), n = tgQvQtdOk(qtd === undefined ? 1 : qtd), pid = null, w, ls, acao = '/comprar/', ex, form, fim = false, timer = 0;
@@ -2723,9 +3283,9 @@ function tgAdicionarSacola(variantId, qtd, opcoes) {
       fim = true;
       clearTimeout(timer);
       if (r.ok) {
-        try { tgQvFechar('sacola'); } catch (e) {}
+        if (!opcoes || !opcoes.manterQuickView) { try { tgQvFechar('sacola'); } catch (e) {} }
         try { if (opcoes && typeof opcoes.antesDeAbrir === 'function') { opcoes.antesDeAbrir(); } } catch (e) {}
-        if (!opcoes || opcoes.abrirSacola !== false) { setTimeout(tgAbrirSacolaDoTema, 80); }
+        if (!opcoes || opcoes.abrirSacola !== false) { setTimeout(tgAbrirSacolaDoTema, 80); } else { tgQvSegurarSacola(); }
       }
       resolve(r);
     }
@@ -2792,6 +3352,10 @@ function tgQvMontarCss() {
     R + 'button' + P + 'acc-bt[aria-expanded="true"]::after{content:"\\2212"}',
     P + 'acc-corpo{padding:0 0 12px}',
     P + 'acc-corpo[hidden]{display:none}',
+    // v15: Descricao e Detalhes abrem como gaveta (a altura anima de 0 ao conteudo); fechada, o conteudo fica invisivel para o leitor e o Tab
+    P + 'acc-gaveta{display:grid;grid-template-rows:0fr;visibility:hidden;transition:grid-template-rows .3s ease,visibility 0s linear .3s}',
+    P + 'acc-gaveta' + P + 'acc-aberta{grid-template-rows:1fr;visibility:visible;transition:grid-template-rows .3s ease,visibility 0s}',
+    P + 'acc-dentro{min-height:0;overflow:hidden}',
     P + 'texto{margin:0 0 10px;font-size:13.5px;line-height:1.65;color:#3a3a3a}',
     P + 'ficha{display:grid;grid-template-columns:minmax(0,40%) minmax(0,1fr);gap:8px;margin:0;padding:8px 0;border-top:1px solid #f2f2f2;font-size:12.5px;line-height:1.5;color:#3a3a3a}',
     P + 'ficha:first-child{border-top:0}',
@@ -2805,7 +3369,7 @@ function tgQvMontarCss() {
     P + 'pe-preco span{font-size:11.5px;font-weight:400;color:' + suave + '}',
     R + 'button' + P + 'fechar{display:flex;align-items:center;justify-content:center;width:44px;height:44px;margin:0;padding:0;border:1px solid #d6d6d6;border-radius:50%;background:#f2f2f2;color:' + texto + ';font:inherit;font-size:20px;line-height:1;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button:focus-visible,' + R + 'a:focus-visible{outline:2px solid #000;outline-offset:2px}',
-    P + 'rolagem{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:0 ' + pad + ' 8px}',
+    P + 'rolagem{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:0 ' + pad + ' 8px}',
     P + 'gal{margin:12px calc(-1*' + pad + ') 0;min-width:0}',
     P + 'palco{position:relative;min-width:0}',
     P + 'trilho{position:relative;display:flex;gap:6px;min-width:0;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x mandatory;scroll-padding-left:' + pad + ';padding:0 ' + pad + ';scrollbar-width:none}',
@@ -2817,9 +3381,9 @@ function tgQvMontarCss() {
     P + 'conta{position:absolute;right:' + 'calc(' + pad + ' + 42px);bottom:8px;padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.45);color:#fff;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums;pointer-events:none}',
     P + 'minis{display:flex;gap:6px;min-width:0;margin:8px 0 0;padding:0 ' + pad + ';overflow-x:auto;scrollbar-width:none}',
     P + 'minis::-webkit-scrollbar{display:none}',
-    R + 'button' + P + 'mini{flex:none;width:44px;height:56px;margin:0;padding:0;border:1px solid transparent;border-radius:0;background:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'mini{position:relative;overflow:hidden;flex:none;width:44px;height:56px;margin:0;padding:0;border:1px solid transparent;border-radius:0;background:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button' + P + 'mini[aria-current="true"]{border-color:' + texto + '}',
-    R + P + 'mini img{display:block;width:100%;max-width:none;height:100%;object-fit:cover}',
+    R + P + 'mini img{position:absolute;top:0;right:0;bottom:0;left:0;display:block;width:100%;max-width:none;height:100%;max-height:none;object-fit:cover;object-position:50% 20%}',  // QA 3.3: preenche a moldura 44x56 mesmo com foto quadrada
     P + 'inf{display:grid;grid-template-columns:minmax(0,1fr);grid-auto-rows:max-content;align-content:start;min-width:0;padding:0 0 6px}',
     P + 'inf>*{min-width:0}',
     P + 'preco{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:4px 0 0;font-size:' + V('qv-preco-tam', '16px') + ';font-weight:' + V('qv-preco-peso', '600') + ';line-height:1.3}',
@@ -2849,7 +3413,7 @@ function tgQvMontarCss() {
     P + 'msg{min-height:0;margin:6px 0 0;font-size:12px;line-height:1.4;color:' + suave + '}',
     P + 'msg:empty{display:none}',
     P + 'msg-erro{color:' + erro + '}',
-    P + 'pe{flex:none;display:grid;gap:4px;padding:12px ' + pad + ' calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid ' + linha + ';background:' + fundo + '}',
+    P + 'pe{position:relative;flex:none;display:grid;gap:4px;padding:12px ' + pad + ' calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid ' + linha + ';background:' + fundo + '}',
     R + 'button' + P + 'add{display:flex;align-items:center;justify-content:center;width:100%;min-height:' + btnAlt + ';margin:0;padding:0 16px;border:1px solid ' + dest + ';border-radius:' + btnRaio + ';background:' + dest + ';color:#fff;font-family:inherit;font-size:14px;font-weight:500;line-height:1.2;letter-spacing:normal;text-transform:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button' + P + 'add:disabled{background:#e6e6e6;border-color:#e6e6e6;color:#8a8a8a;cursor:not-allowed}',
     R + 'a' + P + 'pagina{display:flex;align-items:center;justify-self:start;min-height:44px;margin:14px 0 0;padding:0;color:' + texto + ';font-size:10px;line-height:1.3;letter-spacing:.08em;text-transform:uppercase;text-decoration:underline;text-underline-offset:3px}',
@@ -2878,7 +3442,54 @@ function tgQvMontarCss() {
     R + 'p' + P + 'cj-dest{margin:8px 0 0;font-size:12px;line-height:1.45;color:#3a3a3a}',
     R + 'button' + P + 'cj-det{display:inline-flex;align-items:center;gap:8px;min-height:44px;margin:14px 0 0;padding:0 16px;border:1px solid ' + texto + ';border-radius:0;background:' + fundo + ';color:' + texto + ';font-family:inherit;font-size:13px;font-weight:400;line-height:1.2;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button' + P + 'cj-det::after{content:"";width:6px;height:6px;border-top:1.5px solid currentColor;border-right:1.5px solid currentColor;transform:rotate(45deg)}',
+    // v15 (revisao do Danilo, 25/11): Voltar no cabecalho, foto que amplia, confirmacao da sacola, saida animada e troca de cor como pagina virando
+    P + 'cab-esq{display:flex;align-items:center;gap:4px;min-width:0}',
+    R + 'button' + P + 'voltar{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:44px;margin:0 0 0 -10px;padding:0 10px;border:0;border-radius:999px;background:none;color:' + texto + ';font-family:inherit;font-size:12px;font-weight:500;line-height:1;letter-spacing:normal;text-transform:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'voltar::before{content:"";width:7px;height:7px;margin-left:2px;border-left:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg)}',
+    R + 'button' + P + 'voltar:hover{background:#f2f2f2}',
+    R + 'button' + P + 'voltar[hidden]{display:none}',
+    R + 'button' + P + 'quadro{display:block;margin:0;padding:0;border:0;border-radius:0;cursor:zoom-in;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'add' + P + 'add-ok{gap:10px;background:' + V('qv-cor-ok', '#1d6b40') + ';border-color:' + V('qv-cor-ok', '#1d6b40') + ';color:#fff}',
+    R + 'button' + P + 'add-ok::before{content:"";width:12px;height:6px;margin-top:-4px;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg)}',
+    P + 'aviso{position:absolute;right:' + pad + ';bottom:calc(100% + 10px);left:' + pad + ';z-index:3;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 8px 8px 14px;border-radius:10px;background:#1f1f1f;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,.18);animation:tg-busca-qv-aviso .26s ease}',
+    P + 'aviso[hidden]{display:none}',
+    R + 'p' + P + 'aviso-txt{display:flex;align-items:center;gap:10px;min-width:0;margin:0;font-size:13px;line-height:1.35;color:#fff}',
+    R + 'p' + P + 'aviso-txt::before{content:"";flex:none;width:10px;height:5px;margin-top:-3px;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg)}',
+    R + 'button' + P + 'aviso-ver{flex:none;min-height:40px;margin:0;padding:0 14px;border:1px solid #fff;border-radius:999px;background:#fff;color:#111;font-family:inherit;font-size:12.5px;font-weight:600;line-height:1;letter-spacing:normal;text-transform:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    P + 'saindo{pointer-events:none}',
+    P + 'saindo ' + P + 'fundo{animation:tg-busca-qv-some .22s ease forwards}',
+    P + 'raiz' + P + 'saindo ' + P + 'painel{animation:tg-busca-qv-desce .22s ease-in forwards}',
+    P + 'virando{animation:tg-busca-qv-vira .34s cubic-bezier(.2,.7,.2,1);transform-origin:left center;-webkit-backface-visibility:hidden;backface-visibility:hidden}',
+    P + 'virando' + P + 'virando-volta{animation-name:tg-busca-qv-vira-volta;transform-origin:right center}',
+    // foto ampliada: fundo escuro sobre tudo, foto inteira (contain), passa com o dedo; setas no desktop
+    P + 'lupa{position:fixed;top:0;right:0;bottom:0;left:0;z-index:5;display:flex;flex-direction:column;background:rgba(0,0,0,.94);color:#fff;animation:tg-busca-qv-fade .2s ease}',
+    P + 'lupa-trilho{flex:1 1 auto;display:flex;min-height:0;overflow-x:auto;overflow-y:hidden;overscroll-behavior:contain;scroll-snap-type:x mandatory;scrollbar-width:none}',
+    P + 'lupa-trilho::-webkit-scrollbar{display:none}',
+    P + 'lupa-quadro{flex:0 0 100%;display:flex;align-items:center;justify-content:center;min-width:0;padding:64px 12px calc(40px + env(safe-area-inset-bottom,0px));scroll-snap-align:center;scroll-snap-stop:always}',
+    R + P + 'lupa-quadro img{display:block;width:auto;height:auto;max-width:100%;max-height:100%;object-fit:contain}',
+    R + 'p' + P + 'lupa-conta{position:absolute;top:calc(22px + env(safe-area-inset-top,0px));left:50%;margin:0;padding:3px 10px;border-radius:999px;background:rgba(255,255,255,.14);color:#fff;font-size:13px;line-height:1.5;font-variant-numeric:tabular-nums;transform:translateX(-50%)}',
+    R + 'button' + P + 'lupa-fechar{position:absolute;top:calc(12px + env(safe-area-inset-top,0px));right:12px;display:flex;align-items:center;justify-content:center;width:44px;height:44px;margin:0;padding:0;border:1px solid rgba(255,255,255,.4);border-radius:50%;background:rgba(0,0,0,.45);color:#fff;font-family:inherit;font-size:22px;line-height:1;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'lupa-ant,' + R + 'button' + P + 'lupa-prox{position:absolute;top:50%;display:flex;align-items:center;justify-content:center;width:48px;height:48px;margin:-24px 0 0;padding:0;border:1px solid rgba(255,255,255,.4);border-radius:50%;background:rgba(0,0,0,.45);color:#fff;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'lupa-ant{left:16px}',
+    R + 'button' + P + 'lupa-prox{right:16px}',
+    R + 'button' + P + 'lupa-ant::before,' + R + 'button' + P + 'lupa-prox::before{content:"";width:10px;height:10px;border-top:2px solid currentColor;border-right:2px solid currentColor}',
+    R + 'button' + P + 'lupa-ant::before{margin-left:5px;transform:rotate(-135deg)}',
+    R + 'button' + P + 'lupa-prox::before{margin-right:5px;transform:rotate(45deg)}',
+    R + P + 'lupa button:focus-visible{outline:2px solid #fff;outline-offset:2px}',
+    // v15 (so celular): o rodape fixo comeca escondido (a foto aparece inteira) e sobe quando a rolagem passa do bloco de preco
+    P + 'painel-pe-flutua ' + P + 'pe{position:absolute;right:0;bottom:0;left:0;z-index:2;box-shadow:0 -8px 20px rgba(0,0,0,.08);transition:transform .3s cubic-bezier(.2,.8,.2,1),visibility 0s}',
+    P + 'painel-pe-flutua ' + P + 'pe' + P + 'pe-oculto{transform:translateY(calc(100% + 24px));visibility:hidden;box-shadow:none;transition:transform .24s ease-in,visibility 0s linear .24s}',
+    P + 'pe-espaco{display:block;height:0}',
+    P + 'marca,' + P + 'marca-fim{display:block;height:1px;margin-top:-1px;pointer-events:none}',
+    '@media (max-width:767px){' + R + 'button' + P + 'lupa-ant,' + R + 'button' + P + 'lupa-prox{display:none}}',
     '@keyframes tg-busca-qv-sobe{from{transform:translateY(24px);opacity:.6}}',
+    '@keyframes tg-busca-qv-desce{to{transform:translateY(100%)}}',
+    '@keyframes tg-busca-qv-some{to{opacity:0}}',
+    '@keyframes tg-busca-qv-entra{from{opacity:0;transform:scale(.96)}}',
+    '@keyframes tg-busca-qv-sai{to{opacity:0;transform:scale(.96)}}',
+    '@keyframes tg-busca-qv-vira{from{opacity:.15;transform:perspective(1200px) rotateY(-14deg) translateX(28px)}}',
+    '@keyframes tg-busca-qv-vira-volta{from{opacity:.15;transform:perspective(1200px) rotateY(14deg) translateX(-28px)}}',
+    '@keyframes tg-busca-qv-aviso{from{opacity:0;transform:translateY(8px)}}',
     '@keyframes tg-busca-qv-fade{from{opacity:0}}',
     '@keyframes tg-busca-qv-pulsa{50%{opacity:.5}}',
     '@keyframes tg-busca-qv-treme{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}',
@@ -2895,14 +3506,20 @@ function tgQvMontarCss() {
     P + 'quadro{flex:0 0 100%}',
     P + 'conta{display:block;position:absolute;right:8px;bottom:8px;padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.45);color:#fff;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums;pointer-events:none}',
     P + 'minis{display:flex;gap:6px;margin:8px 8px 0;overflow-x:auto;scrollbar-width:none}',
-    R + 'button' + P + 'mini{flex:none;width:44px;height:56px;margin:0;padding:0;border:1px solid transparent;border-radius:0;background:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'mini{position:relative;overflow:hidden;flex:none;width:44px;height:56px;margin:0;padding:0;border:1px solid transparent;border-radius:0;background:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button' + P + 'mini[aria-current="true"]{border-color:' + texto + '}',
-    R + P + 'mini img{display:block;width:100%;max-width:none;height:100%;object-fit:cover}',
+    R + P + 'mini img{position:absolute;top:0;right:0;bottom:0;left:0;display:block;width:100%;max-width:none;height:100%;max-height:none;object-fit:cover;object-position:50% 20%}',  // QA 3.3: preenche a moldura 44x56 mesmo com foto quadrada
     P + 'inf{grid-area:inf;overflow-y:auto;overscroll-behavior:contain;padding:14px ' + pad + ' 6px}',
     P + 'pe{grid-area:pe}',
+    // v15: no desktop o modal entra e sai com fade e uma leve escala
+    P + 'painel{animation:tg-busca-qv-entra .24s ease}',
+    P + 'raiz' + P + 'saindo ' + P + 'painel{animation:tg-busca-qv-sai .2s ease-in forwards}',
     P + 'painel-conj{display:flex;flex-direction:column;width:min(' + V('qv-conj-largura-desk', '560px') + ',94vw)}',
     P + 'painel-conj ' + P + 'rolagem{display:block;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 ' + pad + ' 8px}',
-    '}'
+    '}',
+    // movimento reduzido: nada anima (fica depois do bloco do desktop para valer sobre ele); o JS tambem tira o modal na hora
+    '@media (prefers-reduced-motion:reduce){' + P + 'painel,' + P + 'fundo,' + P + 'virando,' + P + 'aviso,' + P + 'lupa,' + P + 'raiz' + P + 'saindo ' + P + 'painel,' + P + 'saindo ' + P + 'fundo{animation:none}' +
+      P + 'acc-gaveta,' + P + 'acc-gaveta' + P + 'acc-aberta,' + P + 'painel-pe-flutua ' + P + 'pe,' + P + 'painel-pe-flutua ' + P + 'pe' + P + 'pe-oculto{transition:none}}'
   ].join('\n');
 }
 
@@ -2967,26 +3584,267 @@ function tgQvFocaveis(raiz) {
   var lista = raiz.querySelectorAll('button, a[href]'), out = [], i;
   for (i = 0; i < lista.length; i++) {
     if (lista[i].disabled || lista[i].getAttribute('aria-hidden') === 'true') { continue; }
+    if (lista[i].closest && lista[i].closest('[aria-hidden="true"],[inert],[hidden]')) { continue; }
     if (lista[i].offsetParent === null && !(lista[i].getClientRects && lista[i].getClientRects().length)) { continue; }
     out.push(lista[i]);
   }
   return out;
 }
 
+// ---------------------------------------------------------------- v15 (revisao do Danilo, 25/11)
+// Saida animada, Voltar entre as cores, troca de cor como pagina virando, foto ampliada e confirmacao da sacola dentro do modal.
+var TG_QV_SAIDA_MS = 320;  // a saida anima ~220 ms; se o animationend nao vier, o modal sai assim mesmo neste tempo
+var TG_QV_OK_MS = 2200;    // tempo do "Adicionada a sacola" no botao
+var TG_QV_AVISO_MS = 6000; // tempo do aviso com "Ver sacola"
+var TG_QV_HIST_MAX = 20;   // cores guardadas para o "Voltar"
+
+function tgQvReduzido() {
+  try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; }
+}
+
+// Poe o modal na pagina. Se outro ainda esta saindo (animacao de fechar), o novo entra ANTES dele no DOM: o que sai some por cima e quem
+// procura o modal (querySelector) acha o novo primeiro.
+function tgQvPor(raiz) {
+  var saindo = null;
+  try { saindo = document.querySelector('.tg-busca-qv-saindo'); } catch (e) {}
+  if (saindo && saindo.parentNode === document.body) { document.body.insertBefore(raiz, saindo); } else { document.body.appendChild(raiz); }
+}
+
+// Tira o modal da tela. Tudo que importa (foco, rolagem da pagina, aoFechar) ja aconteceu em tgQvFechar; aqui so a parte visual: o no perde o id
+// e os ids internos na hora (outro modal ja pode abrir), nao recebe toque e sai no fim da animacao ou no tempo limite (o primeiro que vier).
+function tgQvSair(S, animar) {
+  var raiz = S && S.raiz, feito = false, ids, i;
+  function tirar() { if (feito) { return; } feito = true; try { if (raiz && raiz.parentNode) { raiz.parentNode.removeChild(raiz); } } catch (e) {} }
+  try {
+    if (!raiz || !raiz.parentNode) { return; }
+    if (!animar || tgQvReduzido()) { tirar(); return; }
+    raiz.removeAttribute('id');
+    ids = raiz.querySelectorAll('[id]');
+    for (i = 0; i < ids.length; i++) { ids[i].removeAttribute('id'); }
+    raiz.setAttribute('aria-hidden', 'true');
+    raiz.classList.add('tg-busca-qv-saindo');
+    S.painel.addEventListener('animationend', function (ev) { if (ev.target === S.painel) { tirar(); } });
+    setTimeout(tirar, TG_QV_SAIDA_MS);
+  } catch (e) { tirar(); }
+}
+
+function tgQvLimpar(S) {
+  try { clearTimeout(S.tOk); clearTimeout(S.tAviso); clearTimeout(S.tVira); } catch (e) {}
+  try { if (S.peIo) { S.peIo.disconnect(); } if (S.peIoFim) { S.peIoFim.disconnect(); } if (S.peRo) { S.peRo.disconnect(); } } catch (e) {}
+  S.lupa = null;
+}
+
+// "Voltar" do cabecalho: so aparece depois que a cliente trocou de cor dentro do modal; cada toque volta uma cor, ate a original.
+function tgQvAtualizarVoltar(S) {
+  try {
+    if (!S.bVoltar) { return; }
+    if (S.historico && S.historico.length) { S.bVoltar.removeAttribute('hidden'); return; }
+    if (document.activeElement === S.bVoltar) { try { S.painel.focus({ preventScroll: true }); } catch (e) {} }
+    S.bVoltar.setAttribute('hidden', 'hidden');
+  } catch (e) {}
+}
+
+function tgQvVoltar(S) {
+  var alvo = null;
+  if (S.fechado || S.ocupado || !S.historico) { return; }
+  while (S.historico.length && (!alvo || alvo === S.item)) { alvo = S.historico.pop(); }
+  if (!alvo || alvo === S.item) { tgQvAtualizarVoltar(S); return; }
+  tgQvTrocarItem(S, alvo, true);
+}
+
+// Troca a peca mostrada (outra cor) sem fechar o modal: guarda a anterior para o "Voltar", vira a pagina e volta ao topo (a foto).
+function tgQvTrocarItem(S, alvo, volta) {
+  if (!alvo || alvo === S.item || S.ocupado || S.fechado) { return; }
+  if (!volta) {
+    S.historico.push(S.item);
+    if (S.historico.length > TG_QV_HIST_MAX) { S.historico.shift(); }
+  }
+  S.item = alvo;
+  S.confirmado = false;
+  clearTimeout(S.tOk);
+  tgQvAvisoFechar(S);
+  tgQvEmitir(S, 'tg_qv_cor', { position: S.irmaos.indexOf(alvo), reason: volta ? 'voltar' : 'cor' });
+  tgQvCarregar(S);
+  tgQvPintar(S);
+  tgQvAtualizarVoltar(S);
+  tgQvVirar(S, volta);
+  tgQvTopo(S);
+}
+
+// Pagina virando (foto e informacoes giram de leve e entram de lado, ~0,34 s); para tras no "Voltar". Sem animacao com movimento reduzido.
+function tgQvVirar(S, volta) {
+  var alvos = [S.gal, S.inf], i, n;
+  if (tgQvReduzido()) { return; }
+  try {
+    clearTimeout(S.tVira);
+    for (i = 0; i < alvos.length; i++) {
+      n = alvos[i];
+      if (!n) { continue; }
+      n.classList.remove('tg-busca-qv-virando');
+      n.classList.remove('tg-busca-qv-virando-volta');
+      void n.offsetWidth;
+      n.classList.add('tg-busca-qv-virando');
+      if (volta) { n.classList.add('tg-busca-qv-virando-volta'); }
+    }
+    S.tVira = setTimeout(function () {
+      for (i = 0; i < alvos.length; i++) { if (alvos[i]) { alvos[i].classList.remove('tg-busca-qv-virando'); alvos[i].classList.remove('tg-busca-qv-virando-volta'); } }
+    }, 450);
+  } catch (e) {}
+}
+
+// Volta a rolagem do modal ao topo (a foto). No celular rola o corpo; no desktop, as colunas da foto e das informacoes.
+function tgQvTopo(S) {
+  var caixas = [S.rolagem, S.gal, S.inf], suave = !tgQvReduzido(), i, c;
+  for (i = 0; i < caixas.length; i++) {
+    c = caixas[i];
+    if (!c || !c.scrollTop) { continue; }
+    try { c.scrollTo({ top: 0, behavior: suave ? 'smooth' : 'auto' }); } catch (e) { try { c.scrollTop = 0; } catch (e2) {} }
+  }
+}
+
+// Foto ampliada (toque/clique na foto): fundo escuro sobre tudo, foto inteira (contain), passa as fotos com o dedo (celular) ou com as setas e o
+// teclado (desktop), contador, x e Esc. O foco vai para o x e volta para a foto que estiver na tela ao fechar.
+function tgQvLupaAbrir(S, fotos, k, origem, aoFechar) {
+  var lupa = null, trilho, conta = null, bAnt = null, bProx = null, bFechar, n = fotos ? fotos.length : 0, raf = 0, atual = 0;
+  try {
+    if (S.fechado || !n) { return; }
+    if (S.lupa) { tgQvLupaFechar(S); }
+    trilho = tgQvNo('div', 'tg-busca-qv-lupa-trilho');
+    fotos.forEach(function (u, i) {
+      trilho.appendChild(tgQvNo('div', 'tg-busca-qv-lupa-quadro', [el('img', { src: u, alt: 'Foto ' + (i + 1) + ' de ' + n + ': ' + S.item.n, decoding: 'async', loading: Math.abs(i - k) < 2 ? 'eager' : 'lazy' })]));
+    });
+    bFechar = tgQvNo('button', 'tg-busca-qv-lupa-fechar', ['×'], { type: 'button', 'aria-label': 'Fechar fotos' });
+    if (n > 1) {
+      conta = tgQvNo('p', 'tg-busca-qv-lupa-conta', null, { 'aria-live': 'polite' });
+      bAnt = tgQvNo('button', 'tg-busca-qv-lupa-ant', null, { type: 'button', 'aria-label': 'Foto anterior' });
+      bProx = tgQvNo('button', 'tg-busca-qv-lupa-prox', null, { type: 'button', 'aria-label': 'Próxima foto' });
+    }
+    lupa = tgQvNo('div', 'tg-busca-qv-lupa', [trilho, conta, bAnt, bProx, bFechar], { role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Fotos ampliadas: ' + S.item.n });
+    function largura() { return trilho.clientWidth || 1; }
+    function marcar() {
+      atual = Math.min(Math.max(Math.round(trilho.scrollLeft / largura()), 0), n - 1);
+      if (conta) { conta.textContent = (atual + 1) + ' / ' + n; }
+    }
+    function ir(i, suave) {
+      i = ((i % n) + n) % n;
+      try { trilho.scrollTo({ left: i * largura(), behavior: suave && !tgQvReduzido() ? 'smooth' : 'auto' }); } catch (e) { trilho.scrollLeft = i * largura(); }
+      if (!suave) { marcar(); }
+    }
+    trilho.addEventListener('scroll', function () {
+      if (raf) { return; }
+      raf = (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () { raf = 0; marcar(); });
+    }, { passive: true });
+    // tocar no escuro (fora da foto) tambem fecha
+    trilho.addEventListener('click', function (ev) { if (ev.target && ev.target.tagName !== 'IMG') { tgQvLupaFechar(S); } });
+    bFechar.addEventListener('click', function () { tgQvLupaFechar(S); });
+    if (bAnt) { bAnt.addEventListener('click', function () { ir(atual - 1, true); }); }
+    if (bProx) { bProx.addEventListener('click', function () { ir(atual + 1, true); }); }
+    S.lupa = { no: lupa, passo: function (d) { ir(atual + d, true); }, atual: function () { return atual; }, origem: origem, aoFechar: aoFechar };
+    S.painel.setAttribute('aria-hidden', 'true');
+    S.raiz.appendChild(lupa);
+    ir(k, false);
+    try { bFechar.focus({ preventScroll: true }); } catch (e) {}
+    tgQvEmitir(S, 'tg_qv_foto', { position: k });
+  } catch (e) {
+    try { if (lupa && lupa.parentNode) { lupa.parentNode.removeChild(lupa); } } catch (e2) {}
+    S.lupa = null;
+    try { S.painel.removeAttribute('aria-hidden'); } catch (e3) {}
+  }
+}
+
+function tgQvLupaFechar(S) {
+  var L = S.lupa, i = 0, alvo = null;
+  if (!L) { return; }
+  S.lupa = null;
+  try { i = L.atual(); } catch (e) {}
+  try { if (L.no.parentNode) { L.no.parentNode.removeChild(L.no); } } catch (e) {}
+  try { S.painel.removeAttribute('aria-hidden'); } catch (e) {}
+  try { if (typeof L.aoFechar === 'function') { alvo = L.aoFechar(i); } } catch (e) {}
+  alvo = alvo || L.origem;
+  try { if (alvo && document.contains(alvo)) { alvo.focus({ preventScroll: true }); } else { S.painel.focus({ preventScroll: true }); } } catch (e) {}
+}
+
+// Setas com a foto ampliada aberta passam as fotos. Esc (fecha so a foto) e Tab (fica dentro da foto ampliada) estao no teclado do modal.
+function tgQvLupaSetas(S, ev) {
+  var L = S.lupa;
+  if (!L) { return false; }
+  if (ev.key === 'ArrowLeft' || ev.keyCode === 37) { L.passo(-1); return true; }
+  if (ev.key === 'ArrowRight' || ev.keyCode === 39) { L.passo(1); return true; }
+  return false;
+}
+
+// Sacola (v15): o modal fica aberto e confirma ali mesmo. O botao vira "Adicionada a sacola" com check por ~2 s e um aviso discreto oferece
+// "Ver sacola" (o aviso fica numa regiao role=status que ja existe, para o leitor de tela anunciar).
+function tgQvConfirmar(S) {
+  S.confirmado = true;
+  tgQvAtualizarRodape(S);
+  clearTimeout(S.tOk);
+  S.tOk = setTimeout(function () {
+    if (S.fechado || !S.confirmado) { return; }
+    var foco = document.activeElement === S.bAdd;
+    S.confirmado = false;
+    tgQvAtualizarRodape(S);
+    if (foco) { try { S.bAdd.focus({ preventScroll: true }); } catch (e) {} }
+  }, TG_QV_OK_MS);
+  tgQvAvisoMostrar(S);
+}
+
+function tgQvAvisoMostrar(S) {
+  var ver;
+  try {
+    if (!S.aviso) { return; }
+    clearTimeout(S.tAviso);
+    S.aviso.textContent = '';
+    ver = tgQvNo('button', 'tg-busca-qv-aviso-ver', ['Ver sacola'], { type: 'button' });
+    ver.addEventListener('click', function () { tgQvVerSacola(S); });
+    S.aviso.appendChild(tgQvNo('p', 'tg-busca-qv-aviso-txt', ['Peça adicionada à sacola']));
+    S.aviso.appendChild(ver);
+    S.aviso.removeAttribute('hidden');
+    S.tAviso = setTimeout(function () { tgQvAvisoFechar(S); }, TG_QV_AVISO_MS);
+  } catch (e) {}
+}
+
+function tgQvAvisoFechar(S) {
+  try {
+    clearTimeout(S.tAviso);
+    if (!S.aviso || S.aviso.hasAttribute('hidden')) { return; }
+    if (S.aviso.contains(document.activeElement)) { try { S.bAdd.focus({ preventScroll: true }); } catch (e) {} }
+    S.aviso.setAttribute('hidden', 'hidden');
+    S.aviso.textContent = '';
+  } catch (e) {}
+}
+
+// "Ver sacola": fecha o modal e, se a busca (overlay #tg-busca-overlay) estiver aberta, fecha a busca tambem; so entao abre a sacola do tema.
+// Causa do "nada acontece" na busca inicial (25/11): la o modal abre dentro do overlay da busca (z-index alto) e a sacola do tema abria ATRAS dele.
+function tgQvVerSacola(S) {
+  var ov = null, espera = 80;
+  tgQvEmitir(S, 'tg_qv_ver_sacola');
+  tgQvSacolaPedida = Date.now();
+  try { ov = document.querySelector('#tg-busca-overlay.tg-busca-aberto'); } catch (e) {}
+  tgQvFechar('sacola');
+  if (ov) {
+    try { if (typeof tgOvFechar === 'function') { tgOvFechar(); espera = 450; } } catch (e) {}
+  }
+  setTimeout(tgAbrirSacolaDoTema, espera);
+}
+
 function tgQvFechar(motivo) {
   var S = tgQvAtivo;
   if (!S) { return; }
   tgQvAtivo = null;
-  try { document.removeEventListener('keydown', S.teclas, true); } catch (e) {}
-  try { if (S.raiz && S.raiz.parentNode) { S.raiz.parentNode.removeChild(S.raiz); } } catch (e) {}
-  try { document.body.style.overflow = S.overflowCorpo; document.documentElement.style.overflow = S.overflowHtml; } catch (e) {}
   S.fechado = true;
+  try { if (motivo !== 'voltar' && motivo !== 'trocou' && typeof tgHistFechar === 'function') { tgHistFechar('modal'); } } catch (e) {}
+  try { document.removeEventListener('keydown', S.teclas, true); } catch (e) {}
+  try { tgQvLimpar(S); } catch (e) {}
+  // trocar de modal (ou falha) tira na hora; os demais motivos saem animados (deslizando no celular, fade + escala no desktop)
+  tgQvSair(S, motivo !== 'trocou' && motivo !== 'erro');
+  try { document.body.style.overflow = S.overflowCorpo; document.documentElement.style.overflow = S.overflowHtml; } catch (e) {}
   try { if (S.foco && S.foco.focus && document.contains(S.foco)) { S.foco.focus({ preventScroll: true }); } } catch (e) {}
   try { if (typeof S.opcoes.aoFechar === 'function') { S.opcoes.aoFechar(motivo || 'fechar'); } } catch (e) {}
 }
 
 function tgQuickViewAbrir(item, opcoes) {
-  var S, raiz, fundo, painel, cab, titulo, bFechar, rolagem, gal, inf, pe, bAdd, aPagina;
+  var S, raiz, fundo, painel, cab, titulo, bFechar, bVoltar, rolagem, gal, inf, pe, bAdd, aPagina;
   try {
     if (!item || typeof item !== 'object' || !urlProduto(item.s)) { return; }
     opcoes = opcoes && typeof opcoes === 'object' ? opcoes : {};
@@ -2997,9 +3855,11 @@ function tgQuickViewAbrir(item, opcoes) {
       tam: typeof opcoes.tamanhoInicial === 'string' ? opcoes.tamanhoInicial : null, msg: '', msgErro: false, ocupado: false,
       origem: typeof opcoes.origem === 'string' && /^[a-z0-9_-]{1,30}$/.test(opcoes.origem) ? opcoes.origem : 'qv',
       foco: document.activeElement, overflowCorpo: document.body.style.overflow, overflowHtml: document.documentElement.style.overflow,
-      botoesTam: [], fechado: false
+      botoesTam: [], fechado: false, historico: [], confirmado: false
     };
     tgQvAtivo = S;
+    // QA 4.4 (25/11): o Voltar do celular fecha so o modal (a busca continua aberta atras)
+    try { if (typeof tgHistAbrir === "function" && !(tgHistPilha && tgHistPilha.length && tgHistPilha[tgHistPilha.length - 1].tipo === "modal")) { tgHistAbrir("modal", function () { tgQvFechar("voltar"); }); } } catch (e) {}
 
     raiz = tgQvNo('div', 'tg-busca-qv-raiz', null, { id: 'tg-busca-qv' });
     fundo = tgQvNo('div', 'tg-busca-qv-fundo');
@@ -3008,7 +3868,10 @@ function tgQuickViewAbrir(item, opcoes) {
     // Como o modal da pagina Influenciadoras: rotulo no cabecalho; nome, preco, cores e descricao no corpo; peca, tamanhos e botao no rodape fixo.
     titulo = tgQvNo('h2', 'tg-busca-qv-titulo', [item.n], { id: 'tg-busca-qv-titulo' });
     bFechar = tgQvNo('button', 'tg-busca-qv-fechar', ['×'], { type: 'button', 'aria-label': 'Fechar' });
-    cab = tgQvNo('div', 'tg-busca-qv-cab', [tgQvNo('div', 'tg-busca-qv-alca', [el('span')]), tgQvNo('p', 'tg-busca-qv-cab-rotulo', ['Detalhes da peça']), bFechar]);
+    // v15: "Voltar" antes do rotulo, escondido ate a cliente trocar de cor dentro do modal
+    bVoltar = tgQvNo('button', 'tg-busca-qv-voltar', ['Voltar'], { type: 'button', 'aria-label': 'Voltar para a cor anterior' });
+    bVoltar.setAttribute('hidden', 'hidden');
+    cab = tgQvNo('div', 'tg-busca-qv-cab', [tgQvNo('div', 'tg-busca-qv-alca', [el('span')]), tgQvNo('div', 'tg-busca-qv-cab-esq', [bVoltar, tgQvNo('p', 'tg-busca-qv-cab-rotulo', ['Detalhes da peça'])]), bFechar]);
     gal = tgQvNo('div', 'tg-busca-qv-gal');
     inf = tgQvNo('div', 'tg-busca-qv-inf');
     rolagem = tgQvNo('div', 'tg-busca-qv-rolagem', [gal, inf]);
@@ -3016,24 +3879,29 @@ function tgQuickViewAbrir(item, opcoes) {
     aPagina = tgQvNo('a', 'tg-busca-qv-pagina', ['Ver página completa'], { href: urlProduto(item.s) });
     S.pePeca = tgQvNo('div', 'tg-busca-qv-pe-peca');
     S.peTam = tgQvNo('div', 'tg-busca-qv-pe-tam');
-    pe = tgQvNo('div', 'tg-busca-qv-pe', [S.pePeca, S.peTam, bAdd]);
+    // aviso da sacola ("Peca adicionada" + "Ver sacola"): regiao role=status criada vazia para o leitor de tela anunciar quando encher
+    S.aviso = tgQvNo('div', 'tg-busca-qv-aviso', null, { role: 'status', 'aria-live': 'polite' });
+    S.aviso.setAttribute('hidden', 'hidden');
+    pe = tgQvNo('div', 'tg-busca-qv-pe', [S.aviso, S.pePeca, S.peTam, bAdd]);
     painel.appendChild(cab); painel.appendChild(rolagem); painel.appendChild(pe);
     raiz.appendChild(fundo); raiz.appendChild(painel);
-    S.raiz = raiz; S.painel = painel; S.titulo = titulo; S.gal = gal; S.inf = inf; S.bAdd = bAdd; S.aPagina = aPagina; S.bFechar = bFechar; S.pe = pe; S.rolagem = rolagem;
+    S.raiz = raiz; S.painel = painel; S.titulo = titulo; S.gal = gal; S.inf = inf; S.bAdd = bAdd; S.aPagina = aPagina; S.bFechar = bFechar; S.bVoltar = bVoltar; S.pe = pe; S.rolagem = rolagem;
 
     fundo.addEventListener('click', function () { tgQvFechar('fundo'); });
     bFechar.addEventListener('click', function () { tgQvFechar('botao'); });
     bAdd.addEventListener('click', function () { tgQvAdicionar(S); });
+    bVoltar.addEventListener('click', function () { tgQvVoltar(S); });
     aPagina.addEventListener('click', function () { tgQvEmitir(S, 'tg_qv_ver_pagina'); });
     S.teclas = function (ev) {
       var f, a;
       if (S.fechado) { return; }
-      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.preventDefault(); ev.stopPropagation(); tgQvFechar('esc'); return; }
+      if (S.lupa && tgQvLupaSetas(S, ev)) { return; }
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.preventDefault(); ev.stopPropagation(); if (S.lupa) { tgQvLupaFechar(S); return; } tgQvFechar('esc'); return; }
       if (ev.key === 'Tab' || ev.keyCode === 9) {
-        f = tgQvFocaveis(S.painel);
+        f = tgQvFocaveis(S.lupa ? S.lupa.no : S.painel);
         if (!f.length) { ev.preventDefault(); return; }
         a = document.activeElement;
-        if (!S.painel.contains(a)) { ev.preventDefault(); f[0].focus(); return; }
+        if (!(S.lupa ? S.lupa.no : S.painel).contains(a)) { ev.preventDefault(); f[0].focus(); return; }
         if (a === S.painel) { ev.preventDefault(); (ev.shiftKey ? f[f.length - 1] : f[0]).focus(); return; }
         if (ev.shiftKey && a === f[0]) { ev.preventDefault(); f[f.length - 1].focus(); } else if (!ev.shiftKey && a === f[f.length - 1]) { ev.preventDefault(); f[0].focus(); }
       }
@@ -3043,9 +3911,10 @@ function tgQuickViewAbrir(item, opcoes) {
 
     document.body.style.overflow = 'hidden';
     document.documentElement.style.overflow = 'hidden';
-    document.body.appendChild(raiz);
+    tgQvPor(raiz);
     try { painel.focus({ preventScroll: true }); } catch (e) {}
     tgQvEmitir(S, 'tg_qv_abrir', { position: S.irmaos.indexOf(item), results_count: S.irmaos.length });
+    tgQvPeIniciar(S);
     tgQvPintar(S);
     tgQvCarregar(S);
   } catch (e) {
@@ -3096,7 +3965,15 @@ function tgQvPintarGaleria(S) {
   S.gal.style.display = '';
   trilho = tgQvNo('div', 'tg-busca-qv-trilho' + (fotos.length === 1 ? ' tg-busca-qv-trilho-uma' : ''), null, { role: 'group', 'aria-label': 'Fotos de ' + S.item.n });
   fotos.forEach(function (u, k) {
-    var q = tgQvNo('div', 'tg-busca-qv-quadro', [el('img', { src: u, alt: k === 0 ? S.item.n : '', loading: k < 2 ? 'eager' : 'lazy', decoding: 'async' })]);
+    // v15: tocar/clicar na foto abre a foto ampliada (fundo escuro, foto inteira); ao fechar, a galeria fica na foto que estava na tela
+    var q = tgQvNo('button', 'tg-busca-qv-quadro', [el('img', { src: u, alt: k === 0 ? S.item.n : '', loading: k < 2 ? 'eager' : 'lazy', decoding: 'async' })], { type: 'button', 'aria-label': 'Ampliar foto ' + (k + 1) + ' de ' + fotos.length });
+    q.addEventListener('click', function () {
+      tgQvLupaAbrir(S, fotos, k, q, function (i) {
+        if (!quadros[i]) { return null; }
+        try { trilho.scrollLeft = quadros[i].offsetLeft - quadros[0].offsetLeft; } catch (e) {}
+        return quadros[i];
+      });
+    });
     quadros.push(q); trilho.appendChild(q);
   });
   palco = tgQvNo('div', 'tg-busca-qv-palco', [trilho]);
@@ -3145,6 +4022,7 @@ function tgQvPintarTamanhos(S) {
     (function (tt, idx) {
       b.addEventListener('click', function () {
         if (!tt.disponivel || S.ocupado) { return; }
+        if (S.confirmado) { S.confirmado = false; clearTimeout(S.tOk); }
         S.tam = S.tam === tt.rotulo ? null : tt.rotulo;
         S.msg = ''; S.msgErro = false;
         if (S.tam) { tgQvEmitir(S, 'tg_qv_tamanho', { position: idx }); }
@@ -3178,8 +4056,9 @@ function tgQvAtualizarRodape(S) {
     S.aPagina.setAttribute('class', 'tg-busca-qv-pagina');
     if (S.inf && S.aPagina.parentNode !== S.inf) { S.inf.appendChild(S.aPagina); }
   }
-  if (S.ocupado) { texto = 'Adicionando…'; } else if (esgotada) { texto = 'Peça esgotada nesta cor'; } else { texto = 'Adicionar à sacola'; }
+  if (S.ocupado) { texto = 'Adicionando…'; } else if (S.confirmado) { texto = 'Adicionada à sacola'; } else if (esgotada) { texto = 'Peça esgotada nesta cor'; } else { texto = 'Adicionar à sacola'; }
   S.bAdd.textContent = texto;
+  if (S.confirmado && !S.ocupado) { S.bAdd.classList.add('tg-busca-qv-add-ok'); } else { S.bAdd.classList.remove('tg-busca-qv-add-ok'); }
   if (d && S.algumDisponivel && !S.ocupado) { S.bAdd.removeAttribute('disabled'); S.bAdd.removeAttribute('aria-disabled'); } else { S.bAdd.setAttribute('disabled', 'disabled'); S.bAdd.setAttribute('aria-disabled', 'true'); }
   if (S.msgEl) {
     // sem dica fixa: o botao fica ativo e, se a cliente tocar sem tamanho, a mensagem pede o tamanho (o rodape fica mais baixo)
@@ -3224,21 +4103,22 @@ function tgQvPintarDescricao(S) {
   if (accs.firstChild) { S.inf.appendChild(accs); }
 }
 
-// Bloco recolhivel: botao com aria-expanded e corpo com hidden (abre e fecha sem animacao de altura; leitor de tela anuncia o estado).
+// Bloco recolhivel em gaveta (v15): a altura anima de 0 ao conteudo (grid-template-rows 0fr -> 1fr, classe tg-busca-qv-acc-aberta). Fechado, o
+// conteudo fica com visibility:hidden (fora do leitor de tela e do Tab); o botao anuncia o estado por aria-expanded.
 function tgQvSanfona(S, titulo, corpo, chave) {
-  var id = 'tg-busca-qv-acc-' + chave, aberto = !!(S.abertos && S.abertos[chave]), bt, caixa;
+  var id = 'tg-busca-qv-acc-' + chave, aberto = !!(S.abertos && S.abertos[chave]), bt, caixa, gaveta;
   corpo.setAttribute('id', id);
-  if (!aberto) { corpo.setAttribute('hidden', 'hidden'); }
+  gaveta = tgQvNo('div', 'tg-busca-qv-acc-gaveta' + (aberto ? ' tg-busca-qv-acc-aberta' : ''), [tgQvNo('div', 'tg-busca-qv-acc-dentro', [corpo])]);
   bt = tgQvNo('button', 'tg-busca-qv-acc-bt', [titulo], { type: 'button', 'aria-expanded': aberto ? 'true' : 'false', 'aria-controls': id });
   bt.addEventListener('click', function () {
     var abrir = bt.getAttribute('aria-expanded') !== 'true';
     bt.setAttribute('aria-expanded', abrir ? 'true' : 'false');
-    if (abrir) { corpo.removeAttribute('hidden'); } else { corpo.setAttribute('hidden', 'hidden'); }
+    if (abrir) { gaveta.classList.add('tg-busca-qv-acc-aberta'); } else { gaveta.classList.remove('tg-busca-qv-acc-aberta'); }
     S.abertos = S.abertos || {};
     S.abertos[chave] = abrir;
     if (abrir) { tgQvEmitir(S, 'tg_qv_detalhes', { reason: chave }); }
   });
-  caixa = tgQvNo('div', 'tg-busca-qv-acc', [bt, corpo]);
+  caixa = tgQvNo('div', 'tg-busca-qv-acc', [bt, gaveta]);
   return caixa;
 }
 
@@ -3273,6 +4153,8 @@ function tgQvPintar(S) {
   if (rot) { S.inf.appendChild(rot); }
   rot = tgQvLinhaParcelas(S);
   if (rot) { S.inf.appendChild(rot); }
+  // v15: marca do fim do bloco de preco (preco, Pix, parcelas): o rodape fixo so aparece quando a rolagem passa dela
+  if (S.peIo) { S.marcaPreco = tgQvNo('div', 'tg-busca-qv-marca', null, { 'aria-hidden': 'true' }); S.inf.appendChild(S.marcaPreco); tgQvPeMarcar(S); }
   // cores (irmaos) e rotulo da cor atual
   if (S.irmaos.length > 1) {
     S.inf.appendChild(tgQvNo('p', 'tg-busca-qv-rotulo', ['Cor', nomeCor ? el('span', null, [': ' + nomeCor]) : null]));
@@ -3284,13 +4166,7 @@ function tgQvPintar(S) {
         type: 'button', 'aria-pressed': x === S.item ? 'true' : 'false', 'aria-label': 'Cor ' + lista, 'data-qv-cor': x.s
       });
       (function (alvo, pos) {
-        b.addEventListener('click', function () {
-          if (alvo === S.item || S.ocupado) { return; }
-          S.item = alvo;
-          tgQvEmitir(S, 'tg_qv_cor', { position: pos });
-          tgQvCarregar(S);
-          tgQvPintar(S);
-        });
+        b.addEventListener('click', function () { tgQvTrocarItem(S, alvo, false); });
         b.addEventListener('mouseenter', function () { tgQuickViewPrefetch(alvo); });
         b.addEventListener('focus', function () { tgQuickViewPrefetch(alvo); });
       })(x, i);
@@ -3315,6 +4191,7 @@ function tgQvPintar(S) {
     S.msg = 'Não conseguimos carregar os tamanhos agora. Abra a página da peça para escolher e comprar.'; S.msgErro = true;
   }
   tgQvAtualizarRodape(S);
+  tgQvPeMedir(S);
   if (focoCor) {
     idx = S.inf.querySelectorAll('[data-qv-cor]');
     for (i = 0; i < idx.length; i++) { if (idx[i].getAttribute('data-qv-cor') === focoCor) { foco = idx[i]; break; } }
@@ -3325,7 +4202,7 @@ function tgQvPintar(S) {
 // Adicionar a sacola com o tamanho escolhido. Falha mostra aviso e deixa o link da pagina como saida.
 function tgQvAdicionar(S) {
   var d = S.dados, t, i, escolhido = null, caixa;
-  if (!d || S.ocupado) { return; }
+  if (!d || S.ocupado || S.confirmado) { return; }
   if (!S.tam) {
     S.msg = 'Escolha seu tamanho.'; S.msgErro = true;
     tgQvAtualizarRodape(S);
@@ -3336,9 +4213,17 @@ function tgQvAdicionar(S) {
   for (i = 0; i < d.tamanhos.length; i++) { t = d.tamanhos[i]; if (t.rotulo === S.tam && t.disponivel) { escolhido = t; } }
   if (!escolhido) { return; }
   S.ocupado = true; S.msg = ''; S.msgErro = false;
+  tgQvAvisoFechar(S);
   tgQvAtualizarRodape(S);
-  tgAdicionarSacola(escolhido.variantId, 1, { productId: d.productId }).then(function (r) {
-    if (r && r.ok) { tgQvEmitir(S, 'tg_qv_add', { reason: 'ok' }); return; }
+  // v15: o modal fica aberto e confirma ali (antes fechava e abria a sacola do tema, que na busca inicial ficava atras do overlay da busca)
+  tgAdicionarSacola(escolhido.variantId, 1, { productId: d.productId, abrirSacola: false, manterQuickView: true }).then(function (r) {
+    if (r && r.ok) {
+      tgQvEmitir(S, 'tg_qv_add', { reason: 'ok' });
+      if (S.fechado) { return; }
+      S.ocupado = false; S.msg = ''; S.msgErro = false;
+      tgQvConfirmar(S);
+      return;
+    }
     if (S.fechado) { return; }
     S.ocupado = false;
     tgQvEmitir(S, 'tg_qv_add', { reason: r && r.motivo === 'recusado' ? 'recusado' : 'erro' });
@@ -3347,7 +4232,9 @@ function tgQvAdicionar(S) {
       S.msg = 'O tamanho acabou de esgotar. Escolha outro.';
       tgQvPintar(S);
     } else {
-      S.msg = 'Não foi possível adicionar agora. Tente de novo ou abra a página da peça.';
+      if (r && r.motivo === 'timeout') { S.msg = 'A loja demorou para responder. Confira a sacola antes de tentar de novo.'; }
+      else if (r && (r.motivo === 'sem-ls' || r.motivo === 'produto' || r.motivo === 'dados')) { S.msg = 'Não deu para adicionar por aqui. Abra a página da peça para comprar.'; }
+      else { S.msg = 'Não foi possível adicionar agora. Verifique a conexão e tente de novo.'; }
       tgQvAtualizarRodape(S);
     }
     S.msgErro = true;
@@ -3388,6 +4275,8 @@ function tgQuickViewConjunto(conj, opcoes) {
     };
     S.partes = [{ item: conj.cima, dados: null }, { item: conj.baixo, dados: null }];
     tgQvAtivo = S;
+    // QA 4.4 (25/11): o Voltar do celular fecha so o modal (a busca continua aberta atras)
+    try { if (typeof tgHistAbrir === "function" && !(tgHistPilha && tgHistPilha.length && tgHistPilha[tgHistPilha.length - 1].tipo === "modal")) { tgHistAbrir("modal", function () { tgQvFechar("voltar"); }); } } catch (e) {}
     mc = typeof tgModeloCor === 'function' ? tgModeloCor(conj.cima.n) : { modelo: conj.cima.n, cor: '' };
     mb = typeof tgModeloCor === 'function' ? tgModeloCor(conj.baixo.n) : { modelo: conj.baixo.n, cor: '' };
     raiz = tgQvNo('div', 'tg-busca-qv-raiz', null, { id: 'tg-busca-qv' });
@@ -3427,12 +4316,13 @@ function tgQuickViewConjunto(conj, opcoes) {
     S.teclas = function (ev) {
       var f, a;
       if (S.fechado) { return; }
-      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.preventDefault(); ev.stopPropagation(); tgQvFechar('esc'); return; }
+      if (S.lupa && tgQvLupaSetas(S, ev)) { return; }
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.preventDefault(); ev.stopPropagation(); if (S.lupa) { tgQvLupaFechar(S); return; } tgQvFechar('esc'); return; }
       if (ev.key === 'Tab' || ev.keyCode === 9) {
-        f = tgQvFocaveis(S.painel);
+        f = tgQvFocaveis(S.lupa ? S.lupa.no : S.painel);
         if (!f.length) { ev.preventDefault(); return; }
         a = document.activeElement;
-        if (!S.painel.contains(a)) { ev.preventDefault(); f[0].focus(); return; }
+        if (!(S.lupa ? S.lupa.no : S.painel).contains(a)) { ev.preventDefault(); f[0].focus(); return; }
         if (a === S.painel) { ev.preventDefault(); (ev.shiftKey ? f[f.length - 1] : f[0]).focus(); return; }
         if (ev.shiftKey && a === f[0]) { ev.preventDefault(); f[f.length - 1].focus(); } else if (!ev.shiftKey && a === f[f.length - 1]) { ev.preventDefault(); f[0].focus(); }
       }
@@ -3441,7 +4331,7 @@ function tgQuickViewConjunto(conj, opcoes) {
     tgQvArrastar(S, cab);
     document.body.style.overflow = 'hidden';
     document.documentElement.style.overflow = 'hidden';
-    document.body.appendChild(raiz);
+    tgQvPor(raiz);
     try { painel.focus({ preventScroll: true }); } catch (e) {}
     tgQvEmitir(S, 'tg_qv_abrir', { position: 0, results_count: 2, reason: 'conjunto' });
     S.partes.forEach(function (x) {
@@ -3473,6 +4363,73 @@ function tgQvConjDetalhe(S, item, pos) {
   });
 }
 
+// ---------------------------------------------------------------- rodape que aparece com a rolagem (v15, so celular)
+// Na abertura o rodape fixo (peca, tamanhos e "Adicionar") fica escondido para a foto aparecer inteira. Ele sobe e fica fixo quando a rolagem
+// passa do bloco de preco (preco, Pix e parcelas): a marca no fim desse bloco sobe acima da metade da area de rolagem (TG_QV_PE_LINHA) ou some
+// por cima; ou quando a cliente chega ao fim do conteudo. Voltar para a foto esconde de novo (desce). Escondido: aria-hidden + inert (fora do Tab).
+// Sem IntersectionObserver, ou na tela larga, o rodape fica sempre visivel, como antes.
+var TG_QV_PE_LINHA = '-50%';
+function tgQvPeIniciar(S) {
+  try {
+    if (typeof IntersectionObserver !== 'function' || !S.rolagem || !S.pe) { return; }
+    if (window.matchMedia && window.matchMedia('(min-width:768px)').matches) { return; }
+    S.peEspaco = tgQvNo('div', 'tg-busca-qv-pe-espaco', null, { 'aria-hidden': 'true' });
+    S.marcaFim = tgQvNo('div', 'tg-busca-qv-marca-fim', null, { 'aria-hidden': 'true' });
+    S.rolagem.appendChild(S.peEspaco);
+    S.rolagem.appendChild(S.marcaFim);
+    S.pePassou = false; S.peFim = false; S.peVisivel = null;
+    S.peIo = new IntersectionObserver(function (lista) {
+      var i, e, topo;
+      for (i = 0; i < lista.length; i++) {
+        e = lista[i];
+        if (e.target !== S.marcaPreco) { continue; }
+        topo = e.rootBounds ? e.rootBounds.top : S.rolagem.getBoundingClientRect().top;
+        S.pePassou = e.isIntersecting || e.boundingClientRect.bottom <= topo;
+      }
+      tgQvPeMostrar(S);
+    }, { root: S.rolagem, rootMargin: '0px 0px ' + TG_QV_PE_LINHA + ' 0px', threshold: 0 });
+    S.peIoFim = new IntersectionObserver(function (lista) {
+      S.peFim = !!(lista.length && lista[lista.length - 1].isIntersecting);
+      tgQvPeMostrar(S);
+    }, { root: S.rolagem, threshold: 0 });
+    S.peIoFim.observe(S.marcaFim);
+    if (typeof ResizeObserver === 'function') { S.peRo = new ResizeObserver(function () { tgQvPeMedir(S); }); S.peRo.observe(S.pe); }
+    S.painel.classList.add('tg-busca-qv-painel-pe-flutua');
+    tgQvPeMostrar(S);
+  } catch (e) {
+    try { S.painel.classList.remove('tg-busca-qv-painel-pe-flutua'); S.pe.classList.remove('tg-busca-qv-pe-oculto'); S.pe.removeAttribute('aria-hidden'); S.pe.removeAttribute('inert'); } catch (e2) {}
+    try { if (S.peIo) { S.peIo.disconnect(); } if (S.peIoFim) { S.peIoFim.disconnect(); } } catch (e3) {}
+    S.peIo = null; S.peIoFim = null;
+  }
+}
+
+// Observa a marca nova (o corpo e repintado a cada cor).
+function tgQvPeMarcar(S) {
+  try { if (!S.peIo) { return; } S.peIo.disconnect(); if (S.marcaPreco) { S.peIo.observe(S.marcaPreco); } } catch (e) {}
+}
+
+function tgQvPeMostrar(S) {
+  var ver = !!(S.pePassou || S.peFim);
+  try {
+    if (!S.peIo || S.peVisivel === ver) { return; }
+    S.peVisivel = ver;
+    if (ver) {
+      S.pe.classList.remove('tg-busca-qv-pe-oculto'); S.pe.classList.add('tg-busca-qv-pe-visivel');
+      S.pe.removeAttribute('aria-hidden'); S.pe.removeAttribute('inert');
+      tgQvPeMedir(S);
+    } else {
+      if (S.pe.contains(document.activeElement)) { try { S.painel.focus({ preventScroll: true }); } catch (e) {} }
+      S.pe.classList.add('tg-busca-qv-pe-oculto'); S.pe.classList.remove('tg-busca-qv-pe-visivel');
+      S.pe.setAttribute('aria-hidden', 'true'); S.pe.setAttribute('inert', '');
+    }
+  } catch (e) {}
+}
+
+// Espaco no fim da rolagem com a altura do rodape: com ele por cima, o fim do conteudo ainda sobe acima do rodape.
+function tgQvPeMedir(S) {
+  try { if (S.peEspaco && S.pe) { S.peEspaco.style.height = S.pe.offsetHeight + 'px'; } } catch (e) {}
+}
+
 // Arrastar a alca (celular) para baixo fecha: mais de 1/3 da altura ou velocidade alta.
 // v14 (bug do x, Danilo 24/11): a animacao de abertura roda uma vez so (depois o painel fica "assentado"), e o arrastar so comeca se o dedo andar
 // mais de 6 px; um toque no x e so um clique (antes o painel refazia a animacao ao soltar o dedo e o clique caia na alca).
@@ -3499,8 +4456,9 @@ function tgQvArrastar(S, cab) {
     if (!movendo) { return; }
     movendo = false;
     S.painel.removeAttribute('data-arrastando');
+    // fecha: o painel desce a partir de onde o dedo soltou (a animacao de saida parte do transform atual); senao volta ao lugar
+    if (delta > S.painel.offsetHeight / 3 || delta / Math.max(1, Date.now() - t0) > 0.6) { tgQvFechar('arrastar'); return; }
     S.painel.style.transform = '';
-    if (delta > S.painel.offsetHeight / 3 || delta / Math.max(1, Date.now() - t0) > 0.6) { tgQvFechar('arrastar'); }
   }
   cab.addEventListener('touchend', fim);
   cab.addEventListener('touchcancel', fim);
@@ -3607,7 +4565,7 @@ function tgAcTermos(consulta, cat) {
   // so o grupo digitado (vestido, calcas...): as buscas mais comuns da lista da Talgui (mistura de comprimento, tecido, modelo), nao so cores
   curadas = typeof tgSugestoesDoGrupo === 'function' ? tgSugestoesDoGrupo(consulta) : null;
   if (curadas) {
-    for (i = 0; i < curadas.length && out.length < TG_AC_TERMOS_MAX; i++) { out.push({ texto: curadas[i] }); }
+    for (i = 0; i < curadas.length && out.length < TG_AC_TERMOS_MAX; i++) { out.push({ texto: tgAcSemRepetir(curadas[i]) }); }
     return out;
   }
   toks = nq.split(' ');
@@ -3652,8 +4610,14 @@ function tgAcTermos(consulta, cat) {
   }
   n = exato ? 3 : TG_AC_TERMOS_MAX;
   for (i = 0; i < compLista.length && i < n; i++) { juntar(base + comp[compLista[i]].o); }
-  for (i = 0; i < coresLista.length; i++) { juntar(base + ult + ' ' + cores[coresLista[i]].o); }
+  for (i = 0; i < coresLista.length; i++) { juntar(tgAcSemRepetir(base + ult + ' ' + cores[coresLista[i]].o)); }
   return out;
+}
+// QA 1.3 (25/11): tira a palavra repetida em sequencia ("vestido azul azul claro" -> "vestido azul claro"), comparando sem acento
+function tgAcSemRepetir(texto) {
+  var ws = String(texto || '').split(/\s+/), out = [], i;
+  for (i = 0; i < ws.length; i++) { if (!ws[i]) { continue; } if (out.length && normalizeText(out[out.length - 1]) === normalizeText(ws[i])) { continue; } out.push(ws[i]); }
+  return out.join(' ');
 }
 
 // Bloco "Sugestoes": cada termo e um link para a busca; o botao ao lado copia o termo para o campo (sem buscar).
@@ -3704,14 +4668,33 @@ function tgAcLinha(p, posicao, consulta, corrigiu, info, extra) {
       pilulas(p.sz, 8, extra && extra.tamanhos)
     ])
   ]);
-  a.addEventListener('click', function () {
+  a.addEventListener('click', function (ev2) {
     var ev = { position: posicao, query_len: consulta.length, had_correction: corrigiu ? 'sim' : 'nao', engine_version: tgCtx.versao };
     if (curada) { ev.rescue_type = 'curada'; }
     if (esgotado) { ev.rescue_type = 'esgotado'; }
     tgRecSalvar(consulta);
     try { emitir('tg_busca_sugestao_click', ev); } catch (e) {}
+    // QA 3.2 (25/11): tgAcAbrirQv - a peca abre no modal, sem sair da busca (antes ia para a pagina da peca e a sessao de busca acabava)
+    try {
+      if (ev2.defaultPrevented || soldout || ev2.ctrlKey || ev2.metaKey || ev2.shiftKey || ev2.button > 0 || typeof tgRgAbrirQuickView !== 'function') { return; }
+      ev2.preventDefault();
+      tgAcAbrirQv(p, extra && extra.tamanhos, a);
+    } catch (e) {}
   });
   return el('li', null, [a]);
+}
+// Abre o modal da peca da lista da digitacao: as outras cores vem do catalogo; o tamanho buscado ("vestido g") ja chega escolhido (QA 2).
+function tgAcAbrirQv(p, tamanhos, foco) {
+  var tam = null, i, j, up;
+  if (Array.isArray(tamanhos) && Array.isArray(p.sz)) {
+    for (i = 0; i < p.sz.length && !tam; i++) { up = String(p.sz[i]).toUpperCase(); for (j = 0; j < tamanhos.length; j++) { if (String(tamanhos[j]).toUpperCase() === up) { tam = p.sz[i]; break; } } }
+  }
+  obterCatalogo().then(function (cat) {
+    var mapa = null, g;
+    try { mapa = cat ? tgGruposCores(cat) : null; } catch (e) {}
+    g = mapa ? tgGrupoDe(mapa, p) : null;
+    tgRgAbrirQuickView(p, g && g.irmaos && g.irmaos.length ? g.irmaos : [p], tam, foco);
+  })['catch'](function () { tgRgAbrirQuickView(p, [p], tam, foco); });
 }
 
 // Aviso da busca por tamanho ("vestido G"): diz o tamanho que esta valendo, ou que nao ha em estoque e o que se mostra no lugar.
@@ -3784,9 +4767,10 @@ function tgAcPintar(pegarCaixa, input, consulta, res) {
   }
   if (!linhas.length) {
     caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Não encontramos resultados para "', el('strong', null, [consulta]), '".']));
-    // saida util tambem no overlay: chips Em alta (a pagina de resultados cuida do resto)
-    li = tgChipsLista('overlay');
-    if (li) { caixa.appendChild(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Em alta'])); caixa.appendChild(li); }
+    // saida util tambem no overlay: chips Em alta (com Conjuntos) e, abaixo, as Novidades da semana (QA 4.2: nada de tela vazia)
+    li = tgChipsLista('overlay', 'tg-busca-chips-emalta');
+    if (li) { caixa.appendChild(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Em alta'])); caixa.appendChild(li); tgAcChipConjSeHouver(li); }
+    tgAcNovidadesSemana(caixa, consulta);
     caixa.classList.remove('tg-busca-oculto');
     return;
   }
@@ -3808,7 +4792,8 @@ function tgAcPintar(pegarCaixa, input, consulta, res) {
   if (res.curada) {
     for (i = 0; i < blocos.length; i++) { caixa.appendChild(blocos[i]); }
   } else {
-    caixa.appendChild(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Peças']));
+    // QA 1.1/1.5 (25/11): busca por intencao ("promocao", "festa", "roupa de baixo") ganha o titulo dela ("Peças em promoção", "Para festas")
+    caixa.appendChild(el('div', { 'class': 'tg-busca-secao-titulo' }, [res.intencao && res.intencao.aplicado !== false && res.intencao.titulo ? res.intencao.titulo : 'Peças']));
     ul = el('ul', { 'class': 'tg-busca-lista' }, linhas);
     caixa.appendChild(ul);
   }
@@ -3830,15 +4815,96 @@ function tgAcPintar(pegarCaixa, input, consulta, res) {
   caixa.classList.remove('tg-busca-oculto');
 }
 
+// QA 4.2 (25/11): chip Conjuntos tambem nos atalhos do "nao encontramos" (so com a lista do Recom no ar)
+function tgAcChipConjSeHouver(ul) {
+  try { if (typeof tgConjuntosBaixar === 'function') { tgConjuntosBaixar().then(function (d) { if (d) { tgTapeteChipConj(ul); } }, function () {}); } } catch (e) {}
+}
+// "Novidades da semana" no overlay sem resultado: as pecas mais novas (categoria Novidades), em estoque, num carrossel como o da busca inicial
+function tgAcNovidadesSemana(caixa, consulta) {
+  try {
+    Promise.all([obterCatalogo(), typeof tgPgNovidades === 'function' ? tgPgNovidades() : []]).then(function (r) {
+      var cat = r[0], itens, mapa, cards = [], i, c, s;
+      if (!cat || !caixa.parentNode || (tgOv && tgOv.campo && tgOv.campo.value.trim() !== consulta)) { return; }
+      itens = tgNovidadesItens(cat, r[1], 6);
+      if (!itens.length) { return; }
+      mapa = tgGruposCores(cat);
+      for (i = 0; i < itens.length; i++) { c = tgHCard(itens[i], { mapa: mapa, posicao: i + 1, secao: 'novidades-zero' }); if (c) { cards.push(c); } }
+      s = tgTapeteCarrossel('Novidades da semana', tgTapeteColunas(cards), 'novidades');
+      if (s) { caixa.appendChild(el('div', { 'class': 'tg-busca-tapete tg-busca-zero-nov' }, [s])); }
+    }, function () {});
+  } catch (e) {}
+}
+// As pecas das Novidades (na ordem da categoria), em estoque e com 3+ tamanhos; sem a lista das Novidades, as mais vendidas em estoque
+function tgNovidadesItens(cat, handles, max) {
+  var porS = {}, out = [], i, it;
+  for (i = 0; i < cat.length; i++) { if (cat[i] && cat[i].s) { porS[cat[i].s] = cat[i]; } }
+  handles = Array.isArray(handles) ? handles : [];
+  for (i = 0; i < handles.length && out.length < max; i++) { it = porS[handles[i]]; if (it && tgDisponivel(it) && Array.isArray(it.sz) && it.sz.length >= 3) { out.push(it); } }
+  for (i = 0; i < cat.length && out.length < max; i++) { it = cat[i]; if (it && out.indexOf(it) < 0 && it.t === 1 && tgDisponivel(it) && Array.isArray(it.sz) && it.sz.length >= 3) { out.push(it); } }
+  return out;
+}
+
 // Vitrine da busca inicial (v12, Danilo 24/11): com o campo vazio, Vestidos, Conjuntos, Blusas e Calcas, 2 cards horizontais por secao (padrao do modal
 // das Influenciadoras), com as cores e os tamanhos em estoque de cada peca. Vestidos, Blusas e Calcas vem da categoria Novidades (regra no motor:
 // tgVitrineInicial); o Conjunto vem do Recom (as duas pecas em cards separados; tocar em qualquer uma abre o modal com as duas). Enquanto os dados
 // chegam, um esqueleto com a mesma altura segura o lugar (a tela nao pula). Novidades e Conjuntos esperam no maximo TG_TAPETE_ESPERA; depois disso a
 // vitrine sai com o que houver (sem Novidades = mais vendidas neutras; sem Recom = sem a secao Conjuntos).
 var TG_TAPETE_ESPERA = 4000;
+// v15 (Danilo, 25/11: a vitrine e o "tapete de boas-vindas", precisa aparecer quase no toque): o Recom nao segura mais a vitrine (espera 250 ms;
+// se chegar depois, a faixa de Conjuntos entra sozinha) e as Novidades seguram no maximo 1,5 s (depois sai com as mais vendidas). Os dados sao
+// aquecidos logo depois da pagina carregar (tgTapeteAquecer), entao na pratica ja estao prontos no 1o toque.
+var TG_TAPETE_ESPERA_NOV = 1500;
+var TG_TAPETE_ESPERA_CONJ = 250;
+var TG_TAPETE_POR_GRUPO = 6;
+var TG_TAPETE_CONJ_MAX = 3;
+var TG_TAPETE_ROTULO_TODOS = { vestidos: 'Ver todos os vestidos', blusas: 'Ver todas as blusas', calcas: 'Ver todas as calças', conjuntos: 'Ver todos os conjuntos' };
+var TG_TAPETE_BUSCA_TODOS = { vestidos: 'vestido', blusas: 'blusa', calcas: 'calça', conjuntos: 'conjuntos' };
+TG_TAPETE_ROTULO_TODOS.novidades = 'Ver todas as novidades';
+function tgTapeteAquecer() {
+  try { if (typeof obterCatalogo === 'function') { obterCatalogo(); } } catch (e) {}
+  try { if (typeof tgPgNovidades === 'function') { tgPgNovidades(); } } catch (e) {}
+  try { if (typeof tgConjuntosBaixar === 'function') { tgConjuntosBaixar(); } } catch (e) {}
+}
 function tgTapeteSecao(titulo, cards, rodape, id) {
   if (!cards.length) { return null; }
   return el('section', { 'class': 'tg-busca-tapete-secao', 'data-secao': id || '' }, [el('h2', { 'class': 'tg-busca-secao-titulo' }, [titulo]), el('div', { 'class': 'tg-busca-hc-lista' }, cards), rodape || null]);
+}
+// v15 (Danilo, 25/11): cada grupo vira um carrossel (a vitrine nao depende so da rolagem para baixo). Cada coluna tem 2 cards (Vestidos: um em cima,
+// outro embaixo; Conjuntos: as duas pecas do conjunto); arrastar para o lado mostra a proxima coluna (a borda dela aparece, para convidar o gesto).
+// Ate 6 pecas (ou 3 conjuntos) e, no fim, o cartao "Ver todos". O link "Ver todos" tambem fica abaixo do carrossel.
+function tgTapeteTodosLink(id, cls) {
+  var rot = TG_TAPETE_ROTULO_TODOS[id] || 'Ver todos', a;
+  a = el('a', { 'class': cls, href: id === 'novidades' ? (typeof TG_NOVIDADES_CATEGORIA === 'string' ? TG_NOVIDADES_CATEGORIA : '/novidades/') : urlBusca(TG_TAPETE_BUSCA_TODOS[id] || id) }, cls === 'tg-busca-car-todos' ? [el('span', { 'class': 'tg-busca-car-todos-txt' }, [rot]), el('span', { 'class': 'tg-busca-car-seta', 'aria-hidden': 'true' })] : [rot]);
+  a.addEventListener('click', function () { try { emitir('tg_busca_tapete_todos', { reason: id }); tgAcBuscando(); } catch (e) {} });
+  return a;
+}
+function tgTapeteCarrossel(titulo, colunas, id) {
+  var cols = [], i, car;
+  if (!colunas.length) { return null; }
+  for (i = 0; i < colunas.length; i++) { cols.push(el('div', { 'class': 'tg-busca-car-col' }, colunas[i])); }
+  cols.push(el('div', { 'class': 'tg-busca-car-col tg-busca-car-col-todos' }, [tgTapeteTodosLink(id, 'tg-busca-car-todos')]));
+  car = el('div', { 'class': 'tg-busca-carrossel', role: 'group', 'aria-label': titulo + ': arraste para o lado para ver mais' }, cols);
+  return el('section', { 'class': 'tg-busca-tapete-secao tg-busca-tapete-car', 'data-secao': id || '' }, [el('h2', { 'class': 'tg-busca-secao-titulo' }, [titulo]), car, tgTapeteTodosLink(id, 'tg-busca-tapete-todos')]);
+}
+// colunas de 2: [[a,b],[c,d],[e,f]]
+function tgTapeteColunas(cards) { var out = [], i; for (i = 0; i < cards.length; i += 2) { out.push(cards.slice(i, i + 2)); } return out; }
+function tgTapeteSecaoConj(conjs, handles, max) {
+  var lista = [], cols = [], esc = tgTapeteConjuntoEscolhido(conjs, handles), i, p, TG_TAPETE_CONJ_MAX = typeof max === 'number' ? max : 3;
+  if (esc) { lista.push(esc); }
+  if (typeof tgConjuntosIntercalados === 'function') { conjs = tgConjuntosIntercalados(conjs); }
+  for (i = 0; i < conjs.length && lista.length < TG_TAPETE_CONJ_MAX; i++) { if (lista.indexOf(conjs[i]) < 0 && (!esc || conjs[i].cor !== esc.cor)) { lista.push(conjs[i]); } }
+  for (i = 0; i < conjs.length && lista.length < TG_TAPETE_CONJ_MAX; i++) { if (lista.indexOf(conjs[i]) < 0) { lista.push(conjs[i]); } }
+  for (i = 0; i < lista.length; i++) { p = tgHConjunto(lista[i], i + 1, 'conjuntos'); if (p) { cols.push([p]); } }
+  return tgTapeteCarrossel('Conjuntos', cols, 'conjuntos');
+}
+// v15 (R1): tocar num chip ou em "Ver todos" leva a outra pagina; enquanto ela carrega, a busca mostra "Buscando resultados" (nunca a tela parada).
+function tgAcBuscando() {
+  var caixa;
+  try {
+    caixa = tgOv && tgOv.corpo ? tgOv.corpo : null;
+    if (!caixa || caixa.querySelector('.tg-busca-buscando')) { return; }
+    caixa.appendChild(el('div', { 'class': 'tg-busca-buscando', role: 'status' }, [el('span', { 'class': 'tg-busca-buscando-anel', 'aria-hidden': 'true' }), el('span', { 'class': 'tg-busca-buscando-txt' }, ['Buscando resultados'])]));
+  } catch (e) {}
 }
 function tgTapeteEsqueleto() {
   var secs = [], s, k;
@@ -3850,9 +4916,9 @@ function tgTapeteEsqueleto() {
   }
   return el('div', { 'class': 'tg-busca-tapete-esq', role: 'status', 'aria-label': 'Carregando peças' }, secs);
 }
-function tgTapeteLimite(prom, padrao) {
+function tgTapeteLimite(prom, padrao, ms) {
   return new Promise(function (ok) {
-    var t = setTimeout(function () { ok(padrao); }, TG_TAPETE_ESPERA);
+    var t = setTimeout(function () { ok(padrao); }, typeof ms === 'number' ? ms : TG_TAPETE_ESPERA);
     Promise.resolve(prom).then(function (v) { clearTimeout(t); ok(v); }, function () { clearTimeout(t); ok(padrao); });
   });
 }
@@ -3882,39 +4948,34 @@ function tgTapetePreencher(holder, cat, chipsUl) {
     if (!esq) { esq = tgTapeteEsqueleto(); holder.appendChild(esq); }
     pConj = typeof tgConjuntosLista === 'function' ? tgConjuntosLista(cat) : Promise.resolve([]);
     Promise.all([
-      tgTapeteLimite(typeof tgPgNovidades === 'function' ? tgPgNovidades() : [], []),
-      tgTapeteLimite(pConj, [])
+      tgTapeteLimite(typeof tgPgNovidades === 'function' ? tgPgNovidades() : [], [], TG_TAPETE_ESPERA_NOV),
+      tgTapeteLimite(pConj, [], TG_TAPETE_ESPERA_CONJ)
     ]).then(function (r) {
-      var handles = Array.isArray(r[0]) ? r[0] : [], conjs = Array.isArray(r[1]) ? r[1] : [], v, mapa, ordem = ['vestidos', 'conjuntos', 'blusas', 'calcas'], tit = { vestidos: 'Vestidos', conjuntos: 'Conjuntos', blusas: 'Blusas', calcas: 'Calças' }, k, i, cards, sec, c, par, todos;
+      var handles = Array.isArray(r[0]) ? r[0] : [], conjs = Array.isArray(r[1]) ? r[1] : [], v, mapa, ordem = ['vestidos', 'conjuntos', 'blusas', 'calcas'], tit = { vestidos: 'Vestidos', conjuntos: 'Conjuntos', blusas: 'Blusas', calcas: 'Calças' }, k, i, cards, sec;
       if (!holder.parentNode) { return; }
       try {
-      v = tgVitrineInicial(cat, handles);
+      v = tgVitrineInicial(cat, handles, TG_TAPETE_POR_GRUPO);
       mapa = tgGruposCores(cat);
       if (esq.parentNode) { esq.parentNode.removeChild(esq); }
       for (k = 0; k < ordem.length; k++) {
         cards = [];
-        todos = null;
         if (ordem[k] === 'conjuntos') {
-          c = tgTapeteConjuntoEscolhido(conjs, handles);
-          par = c ? tgHConjunto(c, 1, 'conjuntos') : null;
-          if (par) { cards.push(par); todos = el('a', { 'class': 'tg-busca-tapete-todos', href: urlBusca('conjuntos') }, ['Ver todos os conjuntos']); }
+          sec = conjs.length ? tgTapeteSecaoConj(conjs, handles) : null;
         } else {
-          for (i = 0; i < v[ordem[k]].length; i++) { sec = tgHCard(v[ordem[k]][i], { mapa: mapa, posicao: i + 1, secao: ordem[k] }); if (sec) { cards.push(sec); } }
+          for (i = 0; i < v[ordem[k]].length; i++) { sec = tgHCard(v[ordem[k]][i], { mapa: mapa, posicao: i + 1, secao: ordem[k], cardAbre: true }); if (sec) { cards.push(sec); } }
+          sec = tgTapeteCarrossel(tit[ordem[k]], tgTapeteColunas(cards), ordem[k]);
         }
-        sec = tgTapeteSecao(tit[ordem[k]], cards, todos, ordem[k]);
         if (sec) { holder.appendChild(sec); }
       }
       if (conjs.length) { tgTapeteChipConj(chipsUl); }
       // v14: a lista do Recom chegou depois da espera (4G lento na 1a abertura): a secao e o chip entram quando ela chegar, sem mexer no resto
       else {
         Promise.resolve(pConj).then(function (l) {
-          var cj, p, s, antes;
+          var s, antes;
           try {
             if (!Array.isArray(l) || !l.length || !holder.parentNode || holder.querySelector('[data-secao="conjuntos"]')) { return; }
-            cj = tgTapeteConjuntoEscolhido(l, handles);
-            p = cj ? tgHConjunto(cj, 1, 'conjuntos') : null;
-            if (!p) { return; }
-            s = tgTapeteSecao('Conjuntos', [p], el('a', { 'class': 'tg-busca-tapete-todos', href: urlBusca('conjuntos') }, ['Ver todos os conjuntos']), 'conjuntos');
+            s = tgTapeteSecaoConj(l, handles);
+            if (!s) { return; }
             antes = holder.querySelector('[data-secao="blusas"]') || holder.querySelector('[data-secao="calcas"]');
             holder.insertBefore(s, antes || null);
             tgTapeteChipConj(chipsUl);
@@ -3929,7 +4990,7 @@ function tgTapetePreencher(holder, cat, chipsUl) {
 
 // Campo vazio: chips "Em alta" e buscas recentes (ou uma dica, se nao houver nada para mostrar).
 function tgAcVazio(caixa) {
-  var chips = tgChipsLista('overlay'), rec = tgRecLer(), lis = [], i, limpar, topo, holder;
+  var chips = tgChipsLista('overlay', 'tg-busca-chips-emalta'), rec = tgRecLer(), lis = [], i, limpar, topo, holder;
   tgAcLimpar(caixa);
   // buscas recentes no topo (no maximo 3), antes de Em alta e do tapete: quem volta para comparar acha a busca de ontem sem rolar
   if (rec.length) {
@@ -3946,8 +5007,10 @@ function tgAcVazio(caixa) {
     caixa.appendChild(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Em alta']));
     caixa.appendChild(chips);
   }
+  if (chips) { chips.addEventListener('click', function (ev) { try { if (ev.target && ev.target.closest && ev.target.closest('a.tg-busca-chip')) { tgAcBuscando(); } } catch (e) {} }); }
   holder = el('div', { 'class': 'tg-busca-tapete' }, [tgTapeteEsqueleto()]);
   caixa.appendChild(holder);
+  tgTapeteAquecer(); // v15: Novidades e Recom baixam junto com o catalogo (antes, so depois dele)
   try { if (typeof obterCatalogo === 'function') { obterCatalogo().then(function (cat) { if (cat) { tgTapetePreencher(holder, cat, chips); } })['catch'](function () {}); } } catch (e) {}
   if (!chips && !rec.length) { caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Digite o tipo da peça, o nome ou a cor.'])); }
   caixa.classList.remove('tg-busca-oculto');
@@ -3985,10 +5048,23 @@ function tgAcDesenhar(pegarCaixa, input, consulta) {
   obterCatalogo().then(function (cat) {
     pronto = true;
     if (!cat || input.value.trim() !== consulta) { return; }
+    // QA 1.2 (25/11): a lista da digitacao anterior sai na hora (nunca fica congelada com outro termo no campo)
+    try { var cx0 = pegarCaixa(); if (cx0 && cx0.getAttribute('data-consulta') !== consulta) { cx0.setAttribute('data-consulta', consulta); } } catch (e) {}
     function desenhar(res) {
-      if (!res.esgotado && !res.curada) { res.termos = tgAcTermos(consulta, cat); }
+      if (!res.esgotado && !res.curada && !res.intencao) { res.termos = tgAcTermos(consulta, cat); }
       tgAcPintar(pegarCaixa, input, consulta, res);
       tgAcStatus(res.esgotado ? 'Peça esgotada. Veja outras opções.' : 'Peças encontradas.');
+      // QA 1.4 (25/11): busca por conjunto mostra primeiro os pares reais (Recom), em carrossel, com "Ver todos os conjuntos"
+      if (typeof tgEhBuscaConjuntos === 'function' && tgEhBuscaConjuntos(consulta) && typeof tgConjuntosLista === 'function') {
+        tgConjuntosLista(cat).then(function (l) {
+          var cx = pegarCaixa(), s;
+          try {
+            if (!Array.isArray(l) || !l.length || !cx || input.value.trim() !== consulta || cx.querySelector('[data-secao="conjuntos"]')) { return; }
+            s = tgTapeteSecaoConj(l, [], 6);
+            if (s) { s.classList.add('tg-busca-conj-digitado'); cx.insertBefore(s, cx.firstChild); }
+          } catch (e) {}
+        }, function () {});
+      }
     }
     // Esgotado nominal: so quando a palavra pedida nao casa com nenhuma peca em estoque (tgPrecisaEsgotados). O catalogo de esgotados e baixado
     // uma vez, sob demanda; se falhar (ou demorar mais que o limite), a busca de sempre aparece, sem nenhum aviso.
@@ -3996,10 +5072,49 @@ function tgAcDesenhar(pegarCaixa, input, consulta) {
       return obterEsgotados().then(function (esg) {
         if (input.value.trim() !== consulta) { return; }
         desenhar(runSearch(consulta, cat, TG_AC_LIMITE, esg));
-      });
+      })['catch'](function () { try { if (input.value.trim() === consulta) { desenhar(runSearch(consulta, cat, TG_AC_LIMITE)); } } catch (e) {} });
     }
     desenhar(runSearch(consulta, cat, TG_AC_LIMITE));
-  })['catch'](function () {});
+  })['catch'](function () {
+    // QA 1.2: algo falhou ao desenhar: limpa a lista anterior e mostra a mensagem de nada encontrado (nunca a lista velha)
+    try { var cx = pegarCaixa(); if (cx && input.value.trim() === consulta) { tgAcLimpar(cx); cx.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Não encontramos resultados para "', el('strong', null, [consulta]), '".'])); cx.classList.remove('tg-busca-oculto'); } } catch (e) {}
+  });
+}
+
+// ---------------------------------------------------------------- Voltar do celular (QA 4.4, 25/11)
+// Cada camada aberta (busca, modal da peca) ganha uma entrada no historico do navegador (mesma URL, so um marcador no state). O gesto ou botao Voltar
+// tira essa entrada e fecha so a camada de cima; fechar pela tela (x, voltar) tira a entrada tambem, para o Voltar seguinte agir na pagina.
+var tgHistPilha = [], tgHistIgnorar = 0, tgHistLigado = false;
+function tgHistAbrir(tipo, aoVoltar) {
+  try {
+    if (!window.history || typeof window.history.pushState !== 'function') { return; }
+    if (!tgHistLigado) {
+      tgHistLigado = true;
+      window.addEventListener('popstate', function () {
+        var topo;
+        try {
+          if (tgHistIgnorar > 0) { tgHistIgnorar--; return; }
+          topo = tgHistPilha.pop();
+          if (topo && typeof topo.aoVoltar === 'function') { topo.aoVoltar(); }
+        } catch (e) {}
+      });
+    }
+    window.history.pushState({ tgBusca: tipo, n: tgHistPilha.length + 1 }, '', window.location.href);
+    tgHistPilha.push({ tipo: tipo, aoVoltar: aoVoltar });
+  } catch (e) {}
+}
+// a camada fechou pela tela: tira a entrada dela do historico (sem chamar o aoVoltar)
+function tgHistFechar(tipo) {
+  var i;
+  try {
+    for (i = tgHistPilha.length - 1; i >= 0; i--) {
+      if (tgHistPilha[i].tipo === tipo) {
+        if (i === tgHistPilha.length - 1) { tgHistPilha.pop(); tgHistIgnorar++; window.history.back(); }
+        else { tgHistPilha.splice(i, 1); }
+        return;
+      }
+    }
+  } catch (e) {}
 }
 
 // ---------------------------------------------------------------- overlay
@@ -4073,7 +5188,9 @@ function tgOvAbrir(valor, nativo) {
   tgOv.raiz.classList.add('tg-busca-aberto');
   document.documentElement.classList.add('tg-busca-trava');
   if (typeof valor === 'string' && (!ja || tgOv.campo.value !== valor)) { tgOv.campo.value = valor; }
-  tgOv.atualizar(true);
+  // a entrada do Voltar vem antes de desenhar o conteudo (uma falha ao desenhar nao pode deixar a busca sem o Voltar)
+  if (!ja) { tgHistAbrir('busca', function () { try { tgOvFechar(true); } catch (e) {} }); }
+  try { tgOv.atualizar(true); } catch (e) { dbg('overlay', e); }
   try { tgOv.campo.focus(); } catch (e) {}
 }
 
@@ -4083,6 +5200,7 @@ function tgOvDesistir(nativo) {
   tgAcDesistiu = true;
   if (!tgOv) { return; }
   estava = tgOv.aberto;
+  if (estava) { tgHistFechar('busca'); }
   // sem rastro (falha fechada): o overlay sai do DOM e, se nada mais da busca nova esta na pagina, os estilos tambem
   try { if (nativo && tgOv.campo.value && !nativo.value) { nativo.value = tgOv.campo.value; } } catch (e) {}
   try { if (tgOv.raiz.parentNode) { tgOv.raiz.parentNode.removeChild(tgOv.raiz); } } catch (e) {}
@@ -4092,10 +5210,11 @@ function tgOvDesistir(nativo) {
   try { if (estava && nativo && nativo.focus) { nativo.focus(); } } catch (e) {}
 }
 
-function tgOvFechar() {
+function tgOvFechar(peloVoltar) {
   var nav, fechar;
   if (!tgOv || !tgOv.aberto) { return; }
   tgOv.aberto = false;
+  if (!peloVoltar) { tgHistFechar('busca'); }
   tgOv.raiz.classList.add('tg-busca-oculto');
   tgOv.raiz.classList.remove('tg-busca-aberto');
   document.documentElement.classList.remove('tg-busca-trava');
@@ -4105,6 +5224,22 @@ function tgOvFechar() {
     nav = document.getElementById('nav-search');
     fechar = nav ? nav.querySelector('.js-modal-close') : null;
     if (fechar && window.getComputedStyle(nav).display !== 'none') { fechar.click(); }
+  } catch (e) {}
+}
+
+// falha fechada: sem catalogo, nada da busca nova fica na pagina (nem a area de toque da lupa)
+function tgLupaTirar() { try { var st = document.getElementById('tg-busca-lupa'); if (st && st.parentNode) { st.parentNode.removeChild(st); } } catch (e) {} }
+// A busca nova desistiu depois de a lupa ter sido tocada: a lupa passa a abrir a busca nativa, e ela abre agora (se ainda nao estiver aberta).
+var tgLupaNativa = false;
+function tgAbrirNativa() {
+  var nav, b;
+  try {
+    tgLupaNativa = true;
+    tgLupaTirar();
+    nav = document.getElementById('nav-search');
+    if (nav && nav.classList.contains('modal-show')) { return; }
+    b = document.querySelector('.js-search-button');
+    if (b) { b.click(); }
   } catch (e) {}
 }
 
@@ -4120,8 +5255,8 @@ function ligarAutocomplete() {
     try { tgOvAbrir(nativo.value, nativo); } catch (e) {}
     obterCatalogo().then(function (cat) {
       tgPend(false);
-      if (!cat) { tgOvDesistir(nativo); }
-    })['catch'](function () { tgPend(false); tgOvDesistir(nativo); });
+      if (!cat) { tgOvDesistir(nativo); tgAbrirNativa(); }
+    })['catch'](function () { tgPend(false); tgOvDesistir(nativo); tgAbrirNativa(); });
   }
   function ligar(nativo) {
     nativo.addEventListener('focus', function () {
@@ -4140,6 +5275,14 @@ function ligarAutocomplete() {
     });
   }
   for (i = 0; i < inputs.length; i++) { ligar(inputs[i]); }
+  // v15: aquece catalogo, Novidades e Conjuntos logo depois da pagina carregar (quando o aparelho estiver ocioso), para a vitrine abrir no toque
+  try {
+    (function () {
+      function aquecer() { tocou = true; tgTapeteAquecer(); try { obterCatalogo().then(function (c) { if (!c) { tgLupaTirar(); } }, function () { tgLupaTirar(); }); } catch (e) {} }
+      function ja() { var ric = window.requestIdleCallback; if (typeof ric === 'function') { ric(aquecer, { timeout: 2500 }); } else { setTimeout(aquecer, 1200); } }
+      if (document.readyState === 'complete') { ja(); } else { window.addEventListener('load', ja); }
+    })();
+  } catch (e) {}
   // a cliente tocou na lupa antes de a busca nova chegar: o modal nativo ja esta aberto, entao a nossa abre por cima dele agora
   try {
     (function () {
@@ -4148,7 +5291,30 @@ function ligarAutocomplete() {
       if (campo && nav.classList.contains('modal-show') && cs.display !== 'none' && cs.visibility !== 'hidden' && r.height > 0 && r.bottom > 0 && r.top < (window.innerHeight || 0)) { primeira(); abrir(campo); }
     })();
   } catch (e) {}
+  // QA 6.1 (25/11): com a busca nova ligada, a lupa abre SO o nosso overlay: o clique nao chega ao tema (o #nav-search e as classes de bloqueio do
+  // body nao entram). Se a busca nova desistir (catalogo fora), a lupa volta a abrir a nativa (tgLupaNativa).
+  // o tema abre a nativa no touchend e no click da lupa: os dois sao interceptados (o toque abre a nossa; o click que vem logo depois so e engolido)
+  var tgLupaUltimo = 0;
+  function tgLupaToque(ev) {
+    var b, campo;
+    try {
+      b = ev.target && ev.target.closest ? ev.target.closest('.js-search-button') : null;
+      if (!b || tgAcDesistiu || tgLupaNativa) { return; }
+      campo = document.querySelector('#nav-search .js-search-input') || inputs[0];
+      if (!campo) { return; }
+      ev.preventDefault(); ev.stopPropagation(); if (ev.stopImmediatePropagation) { ev.stopImmediatePropagation(); }
+      if (Date.now() - tgLupaUltimo < 700) { return; }
+      tgLupaUltimo = Date.now();
+      primeira();
+      if (tgOv && tgOv.aberto) { tgOv.campo.focus(); return; }
+      abrir(campo);
+    } catch (e) {}
+  }
+  document.addEventListener('touchend', tgLupaToque, true);
+  document.addEventListener('click', tgLupaToque, true);
   botoes = document.querySelectorAll('.js-search-button');
+  // QA 7.1 (25/11): a lupa do topo tem 36x49 px; uma area invisivel em volta leva o toque para 48x48 (o desenho nao muda). Entra ja no inicio.
+  try { if (!document.getElementById('tg-busca-lupa')) { var stl = document.createElement('style'); stl.id = 'tg-busca-lupa'; stl.textContent = '.js-search-button{position:relative}.js-search-button::before{content:"";position:absolute;top:50%;left:50%;width:48px;height:48px;margin:-24px 0 0 -24px}'; document.head.appendChild(stl); } } catch (e) {}
   for (i = 0; i < botoes.length; i++) {
     // pointerdown vem antes do click: o pedido do catalogo (L21) sai um pouco mais cedo, sem passar a pedir nada sem interacao (L6)
     botoes[i].addEventListener('pointerdown', function () { try { if (tgAcDesistiu) { return; } primeira(); injetarEstilos(); tgPend(true); setTimeout(function () { tgPend(false); }, 5000); } catch (e) {} }, { passive: true });
@@ -4327,6 +5493,19 @@ function tgRgCard(p, info, tamanhos, op) {
   } else { filhos.push(pp); }
   for (i = 0; i < filhos.length; i++) { if (filhos[i]) { card.appendChild(filhos[i]); } }
   card.addEventListener('pointerdown', function () { tgRgPrefetch(p); });
+  // v15 (Danilo, 25/11): com o modal, tocar no card nao leva mais para a pagina da peca (o toque acidental gerava frustracao): abre o modal, igual ao VER PECA.
+  // Ctrl/Cmd + clique (abrir em nova aba) continua indo para a pagina.
+  if (ver) {
+    card.addEventListener('click', function (ev) {
+      var a;
+      try {
+        a = ev.target && ev.target.closest ? ev.target.closest('a.tg-busca-card-link') : null;
+        if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button > 0) { return; }
+        ev.preventDefault();
+        ver.ver.click();
+      } catch (e) {}
+    });
+  }
   return card;
 }
 
@@ -4454,10 +5633,27 @@ function tgRgMontar(q, cat, esg) {
   }
   proximos = tgRgTermosProximos(q, cat);
   chips = tgChipsLista('zero');
+  if (chips && typeof tgAcChipConjSeHouver === 'function') { tgAcChipConjSeHouver(chips); }
   filhos = [tgConselheira(), el('h1', { 'class': 'tg-busca-voce tg-busca-zero-titulo' }, ['Não encontramos “' + q + '”']), descTopo, tgRgForm(q), proximos];
   if (chips) { filhos.push(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Em alta'])); filhos.push(chips); }
   filhos.push(descGrade);
-  filhos.push(el('div', { 'class': 'tg-busca-grade' }, cards));
+  var gradeZero = el('div', { 'class': 'tg-busca-grade' }, cards);
+  filhos.push(gradeZero);
+  // QA 4.2 (25/11): sem o "voce quis dizer", a vitrine de resgate vira "Novidades da semana" (8 pecas em estoque) assim que a lista chegar
+  if (!res.suggestedTerm && typeof tgPgNovidades === 'function' && typeof tgNovidadesItens === 'function') {
+    tgPgNovidades().then(function (h) {
+      var its = tgNovidadesItens(cat, h, 8), mp, j, cc, novos = [];
+      try {
+        if (!its.length || !gradeZero.parentNode) { return; }
+        mp = tgGruposCores(cat);
+        for (j = 0; j < its.length; j++) { cc = tgRgCard(its[j], undefined, null, { mapa: mp, posicao: j + 1 }); if (cc) { novos.push(cc); } }
+        if (!novos.length) { return; }
+        while (gradeZero.firstChild) { gradeZero.removeChild(gradeZero.firstChild); }
+        novos.forEach(function (n) { gradeZero.appendChild(n); });
+        if (descGrade) { tgTexto(descGrade, 'Novidades da semana, disponíveis para envio imediato:'); }
+      } catch (e) {}
+    }, function () {});
+  }
   caixa = el('div', { id: 'tg-busca-resgate', 'class': 'tg-busca-zero container' }, filhos);
   destino = tgRgDestino();
   if (!destino) { return; }
@@ -4600,7 +5796,11 @@ function tgHCard(p, op) {
   }
   if (lista.length >= 2) {
     for (i = 0; i < lista.length && i < TG_PG_BOLINHAS_MAX; i++) {
-      bolas.push(el('span', { 'class': 'tg-busca-bolinha' + (lista[i].item === p ? ' tg-busca-bolinha-atual' : ''), 'data-cor': tgCorSlug(lista[i].cor), 'aria-hidden': 'true' }));
+      (function (alvo) {
+        var bo = el('span', { 'class': 'tg-busca-bolinha' + (alvo === p ? ' tg-busca-bolinha-atual' : ''), 'data-cor': tgCorSlug(lista[i].cor), 'aria-hidden': 'true' });
+        bo.addEventListener('click', function () { abrir(det, alvo); }); // QA 3.1 (25/11): a cor tocada e a que abre no modal
+        bolas.push(bo);
+      })(lista[i].item);
     }
     if (lista.length > TG_PG_BOLINHAS_MAX) { bolas.push(el('span', { 'class': 'tg-busca-bolinha-mais', 'aria-label': 'Mais ' + (lista.length - TG_PG_BOLINHAS_MAX) + ' cores' }, ['+' + (lista.length - TG_PG_BOLINHAS_MAX)])); }
     cores = el('div', { 'class': 'tg-busca-cores tg-busca-hc-cores', role: 'img', 'aria-label': 'Cores: ' + lista.map(function (x) { return x.cor; }).join(', ') }, bolas);
@@ -4609,16 +5809,22 @@ function tgHCard(p, op) {
     cores = corUnica;
   }
   if (Array.isArray(p.sz)) { for (i = 0; i < p.sz.length && i < 10; i++) { if (typeof p.sz[i] === 'string' && p.sz[i]) { tams.push(el('span', { 'class': 'tg-busca-hc-tam' }, [p.sz[i]])); } } }
-  card = el('div', { 'class': 'tg-busca-hc' + (op.conjunto ? ' tg-busca-hc-conj' : '') }, [
+  card = el('div', { 'class': 'tg-busca-hc tg-busca-hc-toca' + (op.conjunto ? ' tg-busca-hc-conj' : '') }, [
     f,
     el('div', { 'class': 'tg-busca-hc-inf' }, [
       nome,
-      el('div', { 'class': 'tg-busca-preco tg-busca-hc-preco' }, [el('strong', null, [reais(pr.final)]), pr.de ? el('s', { 'class': 'tg-busca-de' }, [reais(pr.de)]) : null]),
+      el('div', { 'class': 'tg-busca-preco tg-busca-hc-preco' }, [el('strong', null, [reais(pr.final)]), pr.de ? el('s', { 'class': 'tg-busca-de' }, [reais(pr.de)]) : null, linhaPix(pr.final)]),
       cores,
       tams.length ? el('div', { 'class': 'tg-busca-hc-tams', role: 'img', 'aria-label': 'Tamanhos em estoque: ' + p.sz.join(', ') }, tams) : null,
       det
     ])
   ]);
+  // v15 (Danilo, 25/11): tocar em qualquer parte do card abre o modal (antes so o botao); nunca leva para a pagina da peca
+  card.addEventListener('click', function (ev) {
+    try { if (ev.target && ev.target.closest && ev.target.closest('.tg-busca-hc-det, .tg-busca-bolinha')) { return; } } catch (e) {}
+    abrir(det);
+  });
+  card.addEventListener('pointerdown', function () { tgRgPrefetch(p); });
   return card;
 }
 // Um conjunto = as duas pecas em cards separados (Danilo, 24/11): tocar em qualquer uma abre o modal com as duas.
@@ -4689,7 +5895,7 @@ function tgCjMontar(lista) {
     est.tamanhos.forEach(function (v) { micro('Tamanho ' + v, function () { alternar(est.tamanhos, v); }); });
     est.cores.forEach(function (v) { var r = v, k; for (k = 0; k < opCores.length; k++) { if (opCores[k].valor === v) { r = opCores[k].rotulo; } } micro(r, function () { alternar(est.cores, v); }); });
     if (!itens.length) { ativos.classList.add('tg-busca-oculto'); return; }
-    lim = el('button', { type: 'button', 'class': 'tg-busca-limpar-busca' }, ['Limpar busca']);
+    lim = el('button', { type: 'button', 'class': 'tg-busca-limpar-busca' }, ['Limpar filtros']);
     lim.addEventListener('click', function () { try { est.tamanhos = []; est.cores = []; desenhar(); } catch (e) {} });
     ativos.appendChild(el('div', { 'class': 'tg-busca-ativos-lista' }, itens));
     ativos.appendChild(lim);
@@ -4775,15 +5981,23 @@ function tgPgOpcoesCor(lista) {
 
 // Menu suspenso: botao + lista. multi = varias opcoes marcadas (a lista fica aberta; aoEscolher(valor) alterna); sem multi, uma so (fecha ao escolher).
 // opcoes: [{ valor, rotulo }]. atual: valor (ou lista de valores no multi). pintar(opcoesNovas, atual) redesenha.
-function tgPgMenu(rotuloBotao, opcoes, atual, aoEscolher, direita, multi) {
-  var wrap, botao, lista, vigente = atual, opts = opcoes;
+// v15 (Danilo, 25/11): o menu abre e fecha como uma gaveta; cores = 3 colunas com a bolinha da cor ao lado do nome (comCores).
+function tgPgMenu(rotuloBotao, opcoes, atual, aoEscolher, direita, multi, comCores) {
+  var wrap, botao, lista, vigente = atual, opts = opcoes, tFecha = 0;
   botao = el('button', { type: 'button', 'class': 'tg-busca-barra-btn', 'aria-haspopup': 'true', 'aria-expanded': 'false' }, [rotuloBotao]);
-  lista = el('div', { 'class': 'tg-busca-menu tg-busca-oculto', role: 'menu' });
-  wrap = el('div', { 'class': 'tg-busca-menu-wrap' + (direita ? ' tg-busca-menu-dir' : '') }, [botao, lista]);
-  function fechar() { lista.classList.add('tg-busca-oculto'); botao.setAttribute('aria-expanded', 'false'); }
+  lista = el('div', { 'class': 'tg-busca-menu tg-busca-oculto' + (comCores ? ' tg-busca-menu-cores' : ''), role: 'menu' });
+  wrap = el('div', { 'class': 'tg-busca-menu-wrap' + (direita ? ' tg-busca-menu-dir' : '') + (comCores ? ' tg-busca-menu-wrap-cores' : '') }, [botao, lista]);
+  function aberto() { return botao.getAttribute('aria-expanded') === 'true'; }
+  function fechar() {
+    if (!aberto()) { return; }
+    botao.setAttribute('aria-expanded', 'false');
+    lista.classList.add('tg-busca-menu-fechando');
+    clearTimeout(tFecha);
+    tFecha = setTimeout(function () { lista.classList.remove('tg-busca-menu-fechando'); if (!aberto()) { lista.classList.add('tg-busca-oculto'); } }, 170);
+  }
   botao.addEventListener('click', function () {
     try {
-      if (botao.getAttribute('aria-expanded') !== 'true') { lista.classList.remove('tg-busca-oculto'); botao.setAttribute('aria-expanded', 'true'); } else { fechar(); }
+      if (!aberto()) { clearTimeout(tFecha); lista.classList.remove('tg-busca-menu-fechando'); lista.classList.remove('tg-busca-oculto'); botao.setAttribute('aria-expanded', 'true'); } else { fechar(); }
     } catch (e) {}
   });
   function marcado(v) { return multi ? (Array.isArray(vigente) && vigente.indexOf(v) >= 0) : v === vigente; }
@@ -4794,18 +6008,27 @@ function tgPgMenu(rotuloBotao, opcoes, atual, aoEscolher, direita, multi) {
     while (lista.firstChild) { lista.removeChild(lista.firstChild); }
     for (j = 0; j < opts.length; j++) {
       (function (o) {
-        var b = el('button', { type: 'button', role: multi ? 'menuitemcheckbox' : 'menuitemradio', 'aria-checked': marcado(o.valor) ? 'true' : 'false' }, [el('span', null, [o.rotulo])]);
+        var b = el('button', { type: 'button', 'class': o.desligado && !marcado(o.valor) ? 'tg-busca-menu-sem' : null, role: multi ? 'menuitemcheckbox' : 'menuitemradio', 'aria-checked': marcado(o.valor) ? 'true' : 'false', 'aria-disabled': o.desligado && !marcado(o.valor) ? 'true' : null }, [comCores ? el('span', { 'class': 'tg-busca-bolinha tg-busca-menu-bolinha', 'data-cor': tgCorSlug(o.rotulo), 'aria-hidden': 'true' }) : null, el('span', null, [o.rotulo])]);
         b.addEventListener('click', function () {
-          try { if (!multi) { fechar(); } aoEscolher(o.valor); } catch (e) {}
+          try { if (o.desligado && !marcado(o.valor)) { return; } if (!multi) { fechar(); } aoEscolher(o.valor); } catch (e) {}
         });
         lista.appendChild(b);
       })(opts[j]);
     }
   }
   pintar();
-  return { no: wrap, botao: botao, fechar: fechar, pintar: pintar };
+  return { no: wrap, botao: botao, fechar: fechar, pintar: pintar, aberto: aberto };
 }
 
+// As pecas que casam de verdade com a busca (as primeiras res.fortesTotal da lista do motor), por id; null = todas contam.
+function tgPgFortes(lista, res) {
+  var out = {}, n, i;
+  if (!res || typeof res.fortesTotal !== 'number' || !Array.isArray(res.results) || res.fortesTotal >= res.results.length) { return null; }
+  n = res.fortesTotal;
+  for (i = 0; i < res.results.length && i < n; i++) { if (res.results[i]) { out[res.results[i].id] = true; } }
+  return out;
+}
+function tgPgSemMovimento() { try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; } }
 // Monta a pagina de resultados. Devolve true se montou (so entao a lista nativa so some).
 // Filtros que valem juntos: chip de categoria/ocasiao (troca a lista-base pela busca do chip), Novidades, tamanhos (varios) e cores (varias).
 function tgPgMontar(q, cat, res) {
@@ -4821,6 +6044,9 @@ function tgPgMontar(q, cat, res) {
   mais = el('button', { type: 'button', 'class': 'tg-busca-mais tg-busca-oculto' }, ['Ver mais']);
   verNov = el('a', { 'class': 'tg-busca-mais tg-busca-ver-nov tg-busca-oculto', href: typeof TG_NOVIDADES_CATEGORIA === 'string' ? TG_NOVIDADES_CATEGORIA : '/novidades/' }, ['Ver Novidades']);
   voce = el('h1', { 'class': 'tg-busca-voce' });
+  var ordCab = el('p', { 'class': 'tg-busca-ord-cab tg-busca-oculto', role: 'status' });
+  var contador = el('p', { 'class': 'tg-busca-contador', role: 'status', 'aria-live': 'polite' }); // QA 5.1 (25/11)
+  var fortesIds = tgPgFortes(itens, res);
   vazio = el('div', { 'class': 'tg-busca-vazio tg-busca-oculto', role: 'status' });
 
   // lista-base: a da busca da URL, ou a do chip de categoria/ocasiao escolhido
@@ -4864,6 +6090,11 @@ function tgPgMontar(q, cat, res) {
       if (achou) { out.push(todas[j]); }
     }
     return out;
+  }
+  // QA 5.3 (25/11): tamanhos oferecidos = os 6 grupos, apagados quando nenhuma peca da combinacao atual (chip, Novidades, cores) tem aquele tamanho
+  function opcoesTamanho() {
+    var base = tgPgFiltrar(soNovidades(baseItens()), [], est.cores);
+    return tgPgOpcoesTamanho().map(function (o) { return { valor: o.valor, rotulo: o.rotulo, desligado: !tgPgFiltrar(base, [o.valor], []).length }; });
   }
   // Novidades (filtro exclusivo, so combina com Tamanho e Cor): na ordem da categoria Novidades
   function lista() { return tgPgOrdenar(tgPgFiltrar(soNovidades(baseItens()), est.tamanhos, est.cores), est.novidades ? 'lancamentos' : est.ordem, est.handles); }
@@ -4911,14 +6142,38 @@ function tgPgMontar(q, cat, res) {
       rot = tituloCaso(q);
       ocas = typeof TG_CHIPS_OCASIAO !== 'undefined' && Array.isArray(TG_CHIPS_OCASIAO) ? TG_CHIPS_OCASIAO : [];
       for (j = 0; j < ocas.length; j++) { if (ocas[j] && ocas[j].consulta === est.base) { rot = ocas[j].rotulo; } }
+    } else if (res.intencao && res.intencao.aplicado !== false && res.intencao.titulo) { rot = res.intencao.titulo; // QA 1.5 (25/11)
     } else if (grupoQ && normalizeText(q).split(' ').length === 1) { rot = TG_GRUPOS[grupoQ].rotulo; } else { rot = tituloCaso(q); }
     // titulo da ordenacao (Danilo, 24/11): "Lançamentos em Vestidos", "Melhores Ofertas em Vestidos"; Novidades: "Novidades em Vestidos"
-    pre = 'Você está buscando por: ';
+    // v15 (Danilo, 25/11): no topo o titulo fica so "Você está buscando por"; a ordenacao (e Novidades) aparece junto dos cards, antes do 1o
+    pre = '';
     if (est.novidades) { pre = 'Novidades em '; }
     else if (est.ordem !== 'relevancia') { for (j = 0; j < TG_PG_ORDENS.length; j++) { if (TG_PG_ORDENS[j][0] === est.ordem) { pre = TG_PG_ORDENS[j][1] + ' em '; } } }
     while (voce.firstChild) { voce.removeChild(voce.firstChild); }
-    voce.appendChild(document.createTextNode(pre));
+    voce.appendChild(document.createTextNode('Você está buscando por: '));
     voce.appendChild(el('strong', null, [rot]));
+    var nCont = est.atual ? est.atual.length : 0;
+    // QA 5.1 (25/11): com a busca da URL (sem chip de grupo/categoria), contam so as pecas que casam de verdade (res.fortesTotal do motor)
+    if (fortesIds && !est.base && !est.grupo && !est.chip && !est.novidades) { nCont = est.atual.filter(function (it) { return fortesIds[it.id]; }).length; }
+    tgTexto(contador, nCont ? (nCont === 1 ? '1 peça encontrada' : nCont + ' peças encontradas') : '');
+    while (ordCab.firstChild) { ordCab.removeChild(ordCab.firstChild); }
+    if (pre && est.atual && est.atual.length) {
+      ordCab.appendChild(document.createTextNode(pre));
+      ordCab.appendChild(el('strong', null, [rot]));
+      ordCab.classList.remove('tg-busca-oculto');
+    } else { ordCab.classList.add('tg-busca-oculto'); }
+  }
+  // retorno visual de que a lista mudou: a grade entra de novo (suave) e, se a cliente estava la embaixo, a tela volta ao comeco da lista
+  function renovar() {
+    var y, off;
+    try {
+      grade.classList.remove('tg-busca-grade-nova');
+      void grade.offsetWidth;
+      grade.classList.add('tg-busca-grade-nova');
+      y = (ordCab.classList.contains('tg-busca-oculto') ? grade : ordCab).getBoundingClientRect().top;
+      off = (barra && barra.getBoundingClientRect ? barra.getBoundingClientRect().height : 50) + 76; // a barra grudada + o topo do tema
+      if (y < off || y > (window.innerHeight || 0) * 0.6) { window.scrollTo({ top: Math.max(0, window.pageYOffset + y - off), behavior: tgPgSemMovimento() ? 'auto' : 'smooth' }); }
+    } catch (e) {}
   }
   function rotuloContado(base, n) { return n ? base + ' (' + n + ')' : base; }
   function desenhar() {
@@ -4956,7 +6211,7 @@ function tgPgMontar(q, cat, res) {
     chips();
     pintarAtivos();
     if (ordem) { ordem.pintar(null, est.ordem); }
-    if (tam) { tgTexto(tam.botao, rotuloContado('Tamanho', est.tamanhos.length)); tam.pintar(null, est.tamanhos); }
+    if (tam) { tgTexto(tam.botao, rotuloContado('Tamanho', est.tamanhos.length)); tam.pintar(opcoesTamanho(), est.tamanhos); }
     if (cor) {
       est.cores = est.cores.filter(function (c) { return tgPgOpcoesCor(baseItens()).some(function (o) { return o.valor === c; }); });
       opCor = opcoesCor();
@@ -5019,7 +6274,7 @@ function tgPgMontar(q, cat, res) {
 
   function alternar(lista, v) { var p = lista.indexOf(v); if (p >= 0) { lista.splice(p, 1); } else { lista.push(v); } }
   function escolherOrdem(v) {
-    function aplicar() { est.ordem = v; if (v !== 'relevancia') { est.novidades = false; } if (ordem) { ordem.pintar(null, v); } desenhar(); try { emitir('tg_busca_ordenar', { reason: v, results_count: est.atual.length }); } catch (e) {} }
+    function aplicar() { est.ordem = v; if (v !== 'relevancia') { est.novidades = false; } if (ordem) { ordem.pintar(null, v); } desenhar(); renovar(); try { emitir('tg_busca_ordenar', { reason: v, results_count: est.atual.length }); } catch (e) {} }
     if (v === 'lancamentos' && !(est.handles && est.handles.length)) { tgPgNovidades().then(function (h) { est.handles = h; aplicar(); }); return; }
     aplicar();
   }
@@ -5089,7 +6344,7 @@ function tgPgMontar(q, cat, res) {
       micro(r, function () { escolherCor(v); });
     });
     if (!itens.length) { ativos.classList.add('tg-busca-oculto'); return; }
-    lim = el('button', { type: 'button', 'class': 'tg-busca-limpar-busca' }, ['Limpar busca']);
+    lim = el('button', { type: 'button', 'class': 'tg-busca-limpar-busca' }, ['Limpar filtros']);
     lim.addEventListener('click', function () { try { limparTudo(); emitir('tg_busca_chip', { reason: 'limpar' }); } catch (e) {} });
     ativos.appendChild(el('div', { 'class': 'tg-busca-ativos-lista' }, itens));
     ativos.appendChild(lim);
@@ -5147,7 +6402,7 @@ function tgPgMontar(q, cat, res) {
   if (typeof tgFiltrar === 'function') {
     tam = tgPgMenu('Tamanho', tgPgOpcoesTamanho(), [], escolherTamanho, true, true);
     menus.push(tam);
-    if (tgPgOpcoesCor(itens).length) { cor = tgPgMenu('Cor', tgPgOpcoesCor(itens), [], escolherCor, true, true); menus.push(cor); }
+    if (tgPgOpcoesCor(itens).length) { cor = tgPgMenu('Cor', tgPgOpcoesCor(itens), [], escolherCor, true, true, true); menus.push(cor); }
   }
   tg1 = el('button', { type: 'button', 'class': 'tg-busca-togg-1', 'aria-pressed': 'false', 'aria-label': 'Uma peça por linha' }, [el('span', { 'class': 'tg-busca-togg-q' })]);
   tg2 = el('button', { type: 'button', 'class': 'tg-busca-togg-2', 'aria-pressed': 'true', 'aria-label': 'Duas peças por linha' }, [el('span', { 'class': 'tg-busca-togg-q' }), el('span', { 'class': 'tg-busca-togg-q' })]);
@@ -5164,21 +6419,40 @@ function tgPgMontar(q, cat, res) {
   ativos = el('div', { 'class': 'tg-busca-ativos tg-busca-oculto', role: 'group', 'aria-label': 'Filtros aplicados' });
   barra = el('div', { 'class': 'tg-busca-barra' }, [el('div', { 'class': 'tg-busca-barra-linha' }, [ordem ? ordem.no : null, el('span', { 'class': 'tg-busca-barra-espaco' }), tam ? tam.no : null, cor ? cor.no : null, togg]), ativos]);
 
-  // fecha os menus ao clicar fora ou com Esc (um unico ouvinte por pagina)
+  // fecha os menus ao clicar fora ou com Esc (um unico ouvinte por pagina). v15: o toque que fecha o menu so fecha (nao abre o card que estava embaixo).
   document.addEventListener('click', function (ev) {
-    var j;
-    try { for (j = 0; j < menus.length; j++) { if (!menus[j].no.contains(ev.target)) { menus[j].fechar(); } } } catch (e) {}
-  });
+    var j, engoliu = false;
+    try {
+      for (j = 0; j < menus.length; j++) {
+        if (menus[j].aberto() && !menus[j].no.contains(ev.target)) { menus[j].fechar(); if (!(ev.target && ev.target.closest && ev.target.closest('.tg-busca-barra'))) { engoliu = true; } }
+      }
+      if (engoliu) { ev.preventDefault(); ev.stopPropagation(); }
+    } catch (e) {}
+  }, true);
   document.addEventListener('keydown', function (ev) {
     var j;
     try { if (ev.key === 'Escape') { for (j = 0; j < menus.length; j++) { menus[j].fechar(); } } } catch (e) {}
   });
 
+  // QA 2 (25/11): o tamanho da busca vira o filtro Tamanho da barra (a lista-base passa a ser a busca sem o tamanho, para o x do filtro funcionar)
+  try {
+    if (res.tamanho && res.tamanho.aplicado && res.tamanho.texto && typeof tgPgOpcoesTamanho === 'function') {
+      (function () {
+        var pedidos = (res.tamanho.pedido || []).map(function (t) { return String(t).toUpperCase(); }), ids = [], semTam, j, k, g = typeof TG_TAMANHO_GRUPOS !== 'undefined' ? TG_TAMANHO_GRUPOS : [];
+        for (j = 0; j < g.length; j++) { for (k = 0; k < g[j].v.length; k++) { if (pedidos.indexOf(String(g[j].v[k]).toUpperCase()) >= 0 && ids.indexOf(g[j].id) < 0) { ids.push(g[j].id); } } }
+        if (!ids.length) { return; }
+        semTam = runSearch(res.tamanho.texto, cat, TG_PG_LIMITE).results.filter(function (it) { return urlProduto(it.s) && precoFinal(it); });
+        if (!semTam.length) { return; }
+        fortesIds = tgPgFortes(semTam, runSearch(res.tamanho.texto, cat, TG_PG_LIMITE));
+        itens = semTam; mapa = tgGruposCores(itens); est.atual = itens; est.tamanhos = ids;
+      })();
+    }
+  } catch (e) {}
   if (res.tamanho) { aviso = tgAcAviso(res.tamanho); }
   else if (!grupoQ && !tgPgCasaNome(q, itens.slice(0, 6))) { aviso = el('div', { 'class': 'tg-busca-aviso-nome', role: 'status' }, ['Não encontramos “' + String(q).trim().slice(0, 60) + '”. Veja peças com nome parecido:']); }
   var precisaNov = urlLer();
   // chips acima da barra (Danilo, 24/11): ficam a vista, com respiro, e a barra (Ordenar, Tamanho, Cor, grade) gruda no topo ao rolar
-  filhos = [tgConselheira(), voce, aviso, chipsLinha, barra, grade, vazio, mais, verNov];
+  filhos = [tgConselheira(), voce, contador, aviso, chipsLinha, barra, ordCab, grade, vazio, mais, verNov];
   raiz = el('section', { id: 'tg-busca-resultados', 'class': 'tg-busca-pagina', 'aria-label': 'Resultados da busca' }, filhos);
   injetarEstilos();
   desenhar();
@@ -5849,6 +7123,26 @@ var TG_CSS_DESK = [
   '.tg-busca-zero{max-width:1360px;padding:0 40px}',
   '.tg-busca-zero .tg-busca-grade{grid-template-columns:repeat(4,minmax(0,1fr));gap:44px 22px;text-align:left}',
   '.tg-busca-curada{max-width:1440px;padding:0 40px}',
+  // ---- QA (Danilo, 25/11)
+  // 3.4: linha do Pix abaixo do preco, discreta, em todo card (lista da digitacao, vitrine, resultados, conjuntos)
+  '.tg-busca-pix{display:block;flex-basis:100%;margin-top:2px;font-size:12px;font-weight:400;line-height:1.35;color:var(--tgb-cor-texto-suave);white-space:nowrap}',
+  '.tg-busca-pix b{font-weight:600;color:var(--tgb-cor-texto)}',
+  '.tg-busca-meta{align-items:flex-start}',
+  '.tg-busca-meta .tg-busca-selo{margin-top:3px}',
+  '.tg-busca-hc-preco .tg-busca-pix{margin-top:3px}',
+  // 5.1: quantas pecas a busca (com os filtros) encontrou, logo abaixo do titulo do topo
+  '.tg-busca-contador{margin:12px 0 0;text-align:center;font-size:13px;letter-spacing:.02em;color:var(--tgb-cor-texto-suave);font-variant-numeric:tabular-nums}',
+  '.tg-busca-contador:empty{display:none}',
+  // 5.3: tamanho sem peca na combinacao atual: apagado, riscado e sem clique
+  '.tg-busca-dk-tam.tg-busca-dk-tam-sem{border-color:var(--tgb-cor-borda);background:var(--tgb-cor-fundo);color:var(--tgb-cor-texto-suave);opacity:.4;cursor:default;background-image:linear-gradient(135deg,transparent calc(50% - .5px),var(--tgb-cor-texto-suave) calc(50% - .5px),var(--tgb-cor-texto-suave) calc(50% + .5px),transparent calc(50% + .5px))}',
+  '.tg-busca-dk-tam.tg-busca-dk-tam-sem:hover{border-color:var(--tgb-cor-borda)}',
+  // 4.3: item destacado pelas setas do teclado (o foco continua no campo)
+  '#tg-busca-overlay .tg-busca-tecla{outline:2px solid var(--tgb-cor-texto);outline-offset:4px}',
+  '#tg-busca-overlay a.tg-busca-termo.tg-busca-tecla{outline-offset:0;background:var(--tgb-cor-fundo-suave)}',
+  '#tg-busca-overlay .tg-busca-chip.tg-busca-tecla{outline-offset:2px;border-color:var(--tgb-cor-texto)}',
+  // 1.4 e 4.2: os conjuntos (digitando conjunto) e as Novidades da semana (sem resultado) usam a vitrine do desktop
+  '.tg-busca-ov-principal>.tg-busca-conj-digitado{padding-top:28px;margin-bottom:8px}',
+  '.tg-busca-ov-principal>.tg-busca-zero-nov{padding-top:32px}',
   '@keyframes tg-busca-desce{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}',
   '@media (prefers-reduced-motion:reduce){.tg-busca-dk-painel,.tg-busca-vt-esq-foto,.tg-busca-vt-esq i{animation:none}.tg-busca-dk-seta,.tg-busca-dk-ico{transition:none}}',
   // tablet (768 a 1023): a mesma tela com menos colunas
@@ -5904,6 +7198,8 @@ function injetarEstilos() {
  * Expoe (funcoes globais da IIFE): tgQuickViewAbrir, tgQuickViewPrefetch, tgVariantesDoProduto, tgAdicionarSacola.
  * Estilos: injetados uma vez, todos sob .tg-busca-qv- e variaveis --tgb-* (padroes definidos aqui com var(--tgb-x, padrao)).
  * Os marcadores node:inicio / node:fim delimitam a exportacao para o Node; o build remove esse bloco.
+ * v15 (Danilo, 25/11): Voltar entre cores, gavetas animadas, entrada/saida animadas, troca de cor
+ * como pagina virando (com volta ao topo), foto ampliada (classe tg-busca-qv-lupa) e confirmacao da sacola dentro do modal.
  */
 var TG_QV_Z = 2147483500;
 var TG_QV_TIMEOUT_MS = 6000;
@@ -6162,6 +7458,33 @@ function tgQuickViewPrefetch(item) {
 
 // ---------------------------------------------------------------- sacola (porta de store-cart.ts)
 // Abre a sacola do tema pelo MESMO toque no icone visivel (o Morelia grava a entrada de historico que o back() dele espera).
+// v15 (Danilo, 25/11): peca adicionada pelo modal NAO abre a sacola sozinha; a sacola so abre no "Ver sacola". Se a plataforma (LS.addToCartEnhanced
+// com carrinho ajax) abrir o #modal-cart por conta propria logo depois de adicionar, ele e fechado na hora (por 4 s; depois disso, ou se a cliente
+// pediu a sacola, nada e mexido).
+var tgQvSacolaPedida = 0;
+function tgQvSegurarSacola() {
+  var modal, fim, obs = null, t = 0, conferir, parar;
+  try {
+    modal = document.querySelector('#modal-cart');
+    if (!modal) { return; }
+    fim = Date.now() + 4000;
+    parar = function () { try { if (obs) { obs.disconnect(); } } catch (e) {} clearInterval(t); };
+    conferir = function () {
+      var x;
+      try {
+        if (Date.now() > fim || tgQvSacolaPedida > fim - 4000 || !modal.classList) { parar(); return; }
+        if (modal.classList.contains('modal-show')) {
+          x = modal.querySelector ? modal.querySelector('.js-modal-close') : null;
+          if (x && x.click) { x.click(); } else { modal.classList.remove('modal-show'); }
+        }
+      } catch (e) { parar(); }
+    };
+    if (typeof MutationObserver === 'function') { obs = new MutationObserver(conferir); obs.observe(modal, { attributes: true, attributeFilter: ['class'] }); }
+    t = setInterval(conferir, 150);
+    setTimeout(parar, 4100);
+    conferir();
+  } catch (e) {}
+}
 function tgAbrirSacolaDoTema() {
   try {
     var modal = document.querySelector('#modal-cart'), gatilhos, i, g, vis = null;
@@ -6188,6 +7511,8 @@ function tgQvCampo(nome, valor) {
 // Poe a peca na sacola pela funcao da propria loja (LS.addToCartEnhanced). Resolve { ok:true } ou { ok:false, motivo }.
 // So variante numerica e quantidade de 1 a 10. opcoes: { productId (senao o lembrado da leitura da pagina), abrirSacola (padrao true),
 // antesDeAbrir (funcao: o chamador fecha o proprio overlay aqui) }. Em caso de sucesso fecha o quick view aberto e SO ENTAO abre #modal-cart.
+// v15: manterQuickView (o proprio quick view confirma a sacola e oferece "Ver sacola"; nao fecha). O contador da sacola do tema e
+// atualizado pela propria LS.addToCartEnhanced.
 function tgAdicionarSacola(variantId, qtd, opcoes) {
   return new Promise(function (resolve) {
     var vid = tgQvIdOk(variantId), n = tgQvQtdOk(qtd === undefined ? 1 : qtd), pid = null, w, ls, acao = '/comprar/', ex, form, fim = false, timer = 0;
@@ -6196,9 +7521,9 @@ function tgAdicionarSacola(variantId, qtd, opcoes) {
       fim = true;
       clearTimeout(timer);
       if (r.ok) {
-        try { tgQvFechar('sacola'); } catch (e) {}
+        if (!opcoes || !opcoes.manterQuickView) { try { tgQvFechar('sacola'); } catch (e) {} }
         try { if (opcoes && typeof opcoes.antesDeAbrir === 'function') { opcoes.antesDeAbrir(); } } catch (e) {}
-        if (!opcoes || opcoes.abrirSacola !== false) { setTimeout(tgAbrirSacolaDoTema, 80); }
+        if (!opcoes || opcoes.abrirSacola !== false) { setTimeout(tgAbrirSacolaDoTema, 80); } else { tgQvSegurarSacola(); }
       }
       resolve(r);
     }
@@ -6263,6 +7588,10 @@ function tgQvMontarCss() {
     R + 'button' + P + 'acc-bt[aria-expanded="true"]::after{content:"\\2212"}',
     P + 'acc-corpo{padding:0 0 12px}',
     P + 'acc-corpo[hidden]{display:none}',
+    // v15: Descricao e Detalhes abrem como gaveta (a altura anima de 0 ao conteudo); fechada, o conteudo fica invisivel para o leitor e o Tab
+    P + 'acc-gaveta{display:grid;grid-template-rows:0fr;visibility:hidden;transition:grid-template-rows .3s ease,visibility 0s linear .3s}',
+    P + 'acc-gaveta' + P + 'acc-aberta{grid-template-rows:1fr;visibility:visible;transition:grid-template-rows .3s ease,visibility 0s}',
+    P + 'acc-dentro{min-height:0;overflow:hidden}',
     P + 'texto{margin:0 0 10px;font-size:13.5px;line-height:1.65;color:#3a3a3a}',
     P + 'ficha{display:grid;grid-template-columns:minmax(0,40%) minmax(0,1fr);gap:8px;margin:0;padding:8px 0;border-top:1px solid #f2f2f2;font-size:12.5px;line-height:1.5;color:#3a3a3a}',
     P + 'ficha:first-child{border-top:0}',
@@ -6276,7 +7605,7 @@ function tgQvMontarCss() {
     P + 'pe-preco span{font-size:11.5px;font-weight:400;color:' + suave + '}',
     R + 'button' + P + 'fechar{display:flex;align-items:center;justify-content:center;width:44px;height:44px;margin:0;padding:0;border:0;border-radius:50%;background:#f2f2f2;color:' + texto + ';font:inherit;font-size:20px;line-height:1;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button:focus-visible,' + R + 'a:focus-visible{outline:2px solid #000;outline-offset:2px}',
-    P + 'rolagem{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:0 ' + pad + ' 8px}',
+    P + 'rolagem{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:0 ' + pad + ' 8px}',
     P + 'gal{margin:12px calc(-1*' + pad + ') 0;min-width:0}',
     P + 'palco{position:relative;min-width:0}',
     P + 'trilho{position:relative;display:flex;gap:6px;min-width:0;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x mandatory;scroll-padding-left:' + pad + ';padding:0 ' + pad + ';scrollbar-width:none}',
@@ -6288,9 +7617,9 @@ function tgQvMontarCss() {
     P + 'conta{position:absolute;right:' + 'calc(' + pad + ' + 42px);bottom:8px;padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.45);color:#fff;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums;pointer-events:none}',
     P + 'minis{display:flex;gap:6px;min-width:0;margin:8px 0 0;padding:0 ' + pad + ';overflow-x:auto;scrollbar-width:none}',
     P + 'minis::-webkit-scrollbar{display:none}',
-    R + 'button' + P + 'mini{flex:none;width:44px;height:56px;margin:0;padding:0;border:1px solid transparent;border-radius:0;background:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'mini{position:relative;overflow:hidden;flex:none;width:44px;height:56px;margin:0;padding:0;border:1px solid transparent;border-radius:0;background:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button' + P + 'mini[aria-current="true"]{border-color:' + texto + '}',
-    R + P + 'mini img{display:block;width:100%;max-width:none;height:100%;object-fit:cover}',
+    R + P + 'mini img{position:absolute;top:0;right:0;bottom:0;left:0;display:block;width:100%;max-width:none;height:100%;max-height:none;object-fit:cover;object-position:50% 20%}',  // QA 3.3: preenche a moldura 44x56 mesmo com foto quadrada
     P + 'inf{display:grid;grid-template-columns:minmax(0,1fr);grid-auto-rows:max-content;align-content:start;min-width:0;padding:0 0 6px}',
     P + 'inf>*{min-width:0}',
     P + 'preco{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:4px 0 0;font-size:' + V('qv-preco-tam', '16px') + ';font-weight:' + V('qv-preco-peso', '600') + ';line-height:1.3}',
@@ -6320,7 +7649,7 @@ function tgQvMontarCss() {
     P + 'msg{min-height:0;margin:6px 0 0;font-size:12px;line-height:1.4;color:' + suave + '}',
     P + 'msg:empty{display:none}',
     P + 'msg-erro{color:' + erro + '}',
-    P + 'pe{flex:none;display:grid;gap:4px;padding:12px ' + pad + ' calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid ' + linha + ';background:' + fundo + '}',
+    P + 'pe{position:relative;flex:none;display:grid;gap:4px;padding:12px ' + pad + ' calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid ' + linha + ';background:' + fundo + '}',
     R + 'button' + P + 'add{display:flex;align-items:center;justify-content:center;width:100%;min-height:' + btnAlt + ';margin:0;padding:0 16px;border:1px solid ' + dest + ';border-radius:' + btnRaio + ';background:' + dest + ';color:#fff;font-family:inherit;font-size:14px;font-weight:500;line-height:1.2;letter-spacing:normal;text-transform:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button' + P + 'add:disabled{background:#e6e6e6;border-color:#e6e6e6;color:#8a8a8a;cursor:not-allowed}',
     R + 'a' + P + 'pagina{display:flex;align-items:center;justify-self:start;min-height:44px;margin:14px 0 0;padding:0;color:' + texto + ';font-size:10px;line-height:1.3;letter-spacing:.08em;text-transform:uppercase;text-decoration:underline;text-underline-offset:3px}',
@@ -6349,7 +7678,48 @@ function tgQvMontarCss() {
     R + 'p' + P + 'cj-dest{margin:8px 0 0;font-size:12px;line-height:1.45;color:#3a3a3a}',
     R + 'button' + P + 'cj-det{display:inline-flex;align-items:center;gap:8px;min-height:44px;margin:14px 0 0;padding:0 16px;border:1px solid ' + texto + ';border-radius:0;background:' + fundo + ';color:' + texto + ';font-family:inherit;font-size:13px;font-weight:400;line-height:1.2;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button' + P + 'cj-det::after{content:"";width:6px;height:6px;border-top:1.5px solid currentColor;border-right:1.5px solid currentColor;transform:rotate(45deg)}',
+    // v15 (revisao do Danilo, 25/11): Voltar no cabecalho, foto que amplia, confirmacao da sacola, saida animada e troca de cor como pagina virando
+    P + 'cab-esq{display:flex;align-items:center;gap:4px;min-width:0}',
+    R + 'button' + P + 'voltar{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:44px;margin:0 0 0 -10px;padding:0 10px;border:0;border-radius:999px;background:none;color:' + texto + ';font-family:inherit;font-size:12px;font-weight:500;line-height:1;letter-spacing:normal;text-transform:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'voltar::before{content:"";width:7px;height:7px;margin-left:2px;border-left:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg)}',
+    R + 'button' + P + 'voltar:hover{background:#f2f2f2}',
+    R + 'button' + P + 'voltar[hidden]{display:none}',
+    R + 'button' + P + 'quadro{display:block;margin:0;padding:0;border:0;border-radius:0;cursor:zoom-in;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'add' + P + 'add-ok{gap:10px;background:' + V('qv-cor-ok', '#1d6b40') + ';border-color:' + V('qv-cor-ok', '#1d6b40') + ';color:#fff}',
+    R + 'button' + P + 'add-ok::before{content:"";width:12px;height:6px;margin-top:-4px;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg)}',
+    P + 'aviso{position:absolute;right:' + pad + ';bottom:calc(100% + 10px);left:' + pad + ';z-index:3;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 8px 8px 14px;border-radius:10px;background:#1f1f1f;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,.18);animation:tg-busca-qv-aviso .26s ease}',
+    P + 'aviso[hidden]{display:none}',
+    R + 'p' + P + 'aviso-txt{display:flex;align-items:center;gap:10px;min-width:0;margin:0;font-size:13px;line-height:1.35;color:#fff}',
+    R + 'p' + P + 'aviso-txt::before{content:"";flex:none;width:10px;height:5px;margin-top:-3px;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg)}',
+    R + 'button' + P + 'aviso-ver{flex:none;min-height:40px;margin:0;padding:0 14px;border:1px solid #fff;border-radius:999px;background:#fff;color:#111;font-family:inherit;font-size:12.5px;font-weight:600;line-height:1;letter-spacing:normal;text-transform:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    P + 'saindo{pointer-events:none}',
+    P + 'saindo ' + P + 'fundo{animation:tg-busca-qv-some .22s ease forwards}',
+    P + 'raiz' + P + 'saindo ' + P + 'painel{animation:tg-busca-qv-desce .22s ease-in forwards}',
+    P + 'virando{animation:tg-busca-qv-vira .34s cubic-bezier(.2,.7,.2,1);transform-origin:left center;-webkit-backface-visibility:hidden;backface-visibility:hidden}',
+    P + 'virando' + P + 'virando-volta{animation-name:tg-busca-qv-vira-volta;transform-origin:right center}',
+    // foto ampliada: fundo escuro sobre tudo, foto inteira (contain), passa com o dedo; setas no desktop
+    P + 'lupa{position:fixed;top:0;right:0;bottom:0;left:0;z-index:5;display:flex;flex-direction:column;background:rgba(0,0,0,.94);color:#fff;animation:tg-busca-qv-fade .2s ease}',
+    P + 'lupa-trilho{flex:1 1 auto;display:flex;min-height:0;overflow-x:auto;overflow-y:hidden;overscroll-behavior:contain;scroll-snap-type:x mandatory;scrollbar-width:none}',
+    P + 'lupa-trilho::-webkit-scrollbar{display:none}',
+    P + 'lupa-quadro{flex:0 0 100%;display:flex;align-items:center;justify-content:center;min-width:0;padding:64px 12px calc(40px + env(safe-area-inset-bottom,0px));scroll-snap-align:center;scroll-snap-stop:always}',
+    R + P + 'lupa-quadro img{display:block;width:auto;height:auto;max-width:100%;max-height:100%;object-fit:contain}',
+    R + 'p' + P + 'lupa-conta{position:absolute;top:calc(22px + env(safe-area-inset-top,0px));left:50%;margin:0;padding:3px 10px;border-radius:999px;background:rgba(255,255,255,.14);color:#fff;font-size:13px;line-height:1.5;font-variant-numeric:tabular-nums;transform:translateX(-50%)}',
+    R + 'button' + P + 'lupa-fechar{position:absolute;top:calc(12px + env(safe-area-inset-top,0px));right:12px;display:flex;align-items:center;justify-content:center;width:44px;height:44px;margin:0;padding:0;border:1px solid rgba(255,255,255,.4);border-radius:50%;background:rgba(0,0,0,.45);color:#fff;font-family:inherit;font-size:22px;line-height:1;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'lupa-ant,' + R + 'button' + P + 'lupa-prox{position:absolute;top:50%;display:flex;align-items:center;justify-content:center;width:48px;height:48px;margin:-24px 0 0;padding:0;border:1px solid rgba(255,255,255,.4);border-radius:50%;background:rgba(0,0,0,.45);color:#fff;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'lupa-ant{left:16px}',
+    R + 'button' + P + 'lupa-prox{right:16px}',
+    R + 'button' + P + 'lupa-ant::before,' + R + 'button' + P + 'lupa-prox::before{content:"";width:10px;height:10px;border-top:2px solid currentColor;border-right:2px solid currentColor}',
+    R + 'button' + P + 'lupa-ant::before{margin-left:5px;transform:rotate(-135deg)}',
+    R + 'button' + P + 'lupa-prox::before{margin-right:5px;transform:rotate(45deg)}',
+    R + P + 'lupa button:focus-visible{outline:2px solid #fff;outline-offset:2px}',
     '@keyframes tg-busca-qv-sobe{from{transform:translateY(24px);opacity:.6}}',
+    '@keyframes tg-busca-qv-desce{to{transform:translateY(100%)}}',
+    '@keyframes tg-busca-qv-some{to{opacity:0}}',
+    '@keyframes tg-busca-qv-entra{from{opacity:0;transform:scale(.96)}}',
+    '@keyframes tg-busca-qv-sai{to{opacity:0;transform:scale(.96)}}',
+    '@keyframes tg-busca-qv-vira{from{opacity:.15;transform:perspective(1200px) rotateY(-14deg) translateX(28px)}}',
+    '@keyframes tg-busca-qv-vira-volta{from{opacity:.15;transform:perspective(1200px) rotateY(14deg) translateX(-28px)}}',
+    '@keyframes tg-busca-qv-aviso{from{opacity:0;transform:translateY(8px)}}',
     '@keyframes tg-busca-qv-fade{from{opacity:0}}',
     '@keyframes tg-busca-qv-pulsa{50%{opacity:.5}}',
     '@keyframes tg-busca-qv-treme{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}',
@@ -6366,14 +7736,20 @@ function tgQvMontarCss() {
     P + 'quadro{flex:0 0 100%}',
     P + 'conta{display:block;position:absolute;right:8px;bottom:8px;padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.45);color:#fff;font-size:12px;line-height:1.5;font-variant-numeric:tabular-nums;pointer-events:none}',
     P + 'minis{display:flex;gap:6px;margin:8px 8px 0;overflow-x:auto;scrollbar-width:none}',
-    R + 'button' + P + 'mini{flex:none;width:44px;height:56px;margin:0;padding:0;border:1px solid transparent;border-radius:0;background:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
+    R + 'button' + P + 'mini{position:relative;overflow:hidden;flex:none;width:44px;height:56px;margin:0;padding:0;border:1px solid transparent;border-radius:0;background:none;cursor:pointer;-webkit-appearance:none;appearance:none}',
     R + 'button' + P + 'mini[aria-current="true"]{border-color:' + texto + '}',
-    R + P + 'mini img{display:block;width:100%;max-width:none;height:100%;object-fit:cover}',
+    R + P + 'mini img{position:absolute;top:0;right:0;bottom:0;left:0;display:block;width:100%;max-width:none;height:100%;max-height:none;object-fit:cover;object-position:50% 20%}',  // QA 3.3: preenche a moldura 44x56 mesmo com foto quadrada
     P + 'inf{grid-area:inf;overflow-y:auto;overscroll-behavior:contain;padding:14px ' + pad + ' 6px}',
     P + 'pe{grid-area:pe}',
+    // v15: no desktop o modal entra e sai com fade e uma leve escala
+    P + 'painel{animation:tg-busca-qv-entra .24s ease}',
+    P + 'raiz' + P + 'saindo ' + P + 'painel{animation:tg-busca-qv-sai .2s ease-in forwards}',
     P + 'painel-conj{display:flex;flex-direction:column;width:min(' + V('qv-conj-largura-desk', '560px') + ',94vw)}',
     P + 'painel-conj ' + P + 'rolagem{display:block;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 ' + pad + ' 8px}',
-    '}'
+    '}',
+    // movimento reduzido: nada anima (fica depois do bloco do desktop para valer sobre ele); o JS tambem tira o modal na hora
+    '@media (prefers-reduced-motion:reduce){' + P + 'painel,' + P + 'fundo,' + P + 'virando,' + P + 'aviso,' + P + 'lupa,' + P + 'raiz' + P + 'saindo ' + P + 'painel,' + P + 'saindo ' + P + 'fundo{animation:none}' +
+      P + 'acc-gaveta,' + P + 'acc-gaveta' + P + 'acc-aberta,' + P + 'painel-pe-flutua ' + P + 'pe,' + P + 'painel-pe-flutua ' + P + 'pe' + P + 'pe-oculto{transition:none}}'
   ].join('\n');
 }
 
@@ -6438,26 +7814,266 @@ function tgQvFocaveis(raiz) {
   var lista = raiz.querySelectorAll('button, a[href]'), out = [], i;
   for (i = 0; i < lista.length; i++) {
     if (lista[i].disabled || lista[i].getAttribute('aria-hidden') === 'true') { continue; }
+    if (lista[i].closest && lista[i].closest('[aria-hidden="true"],[inert],[hidden]')) { continue; }
     if (lista[i].offsetParent === null && !(lista[i].getClientRects && lista[i].getClientRects().length)) { continue; }
     out.push(lista[i]);
   }
   return out;
 }
 
+// ---------------------------------------------------------------- v15 (revisao do Danilo, 25/11)
+// Saida animada, Voltar entre as cores, troca de cor como pagina virando, foto ampliada e confirmacao da sacola dentro do modal.
+var TG_QV_SAIDA_MS = 320;  // a saida anima ~220 ms; se o animationend nao vier, o modal sai assim mesmo neste tempo
+var TG_QV_OK_MS = 2200;    // tempo do "Adicionada a sacola" no botao
+var TG_QV_AVISO_MS = 6000; // tempo do aviso com "Ver sacola"
+var TG_QV_HIST_MAX = 20;   // cores guardadas para o "Voltar"
+
+function tgQvReduzido() {
+  try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; }
+}
+
+// Poe o modal na pagina. Se outro ainda esta saindo (animacao de fechar), o novo entra ANTES dele no DOM: o que sai some por cima e quem
+// procura o modal (querySelector) acha o novo primeiro.
+function tgQvPor(raiz) {
+  var saindo = null;
+  try { saindo = document.querySelector('.tg-busca-qv-saindo'); } catch (e) {}
+  if (saindo && saindo.parentNode === document.body) { document.body.insertBefore(raiz, saindo); } else { document.body.appendChild(raiz); }
+}
+
+// Tira o modal da tela. Tudo que importa (foco, rolagem da pagina, aoFechar) ja aconteceu em tgQvFechar; aqui so a parte visual: o no perde o id
+// e os ids internos na hora (outro modal ja pode abrir), nao recebe toque e sai no fim da animacao ou no tempo limite (o primeiro que vier).
+function tgQvSair(S, animar) {
+  var raiz = S && S.raiz, feito = false, ids, i;
+  function tirar() { if (feito) { return; } feito = true; try { if (raiz && raiz.parentNode) { raiz.parentNode.removeChild(raiz); } } catch (e) {} }
+  try {
+    if (!raiz || !raiz.parentNode) { return; }
+    if (!animar || tgQvReduzido()) { tirar(); return; }
+    raiz.removeAttribute('id');
+    ids = raiz.querySelectorAll('[id]');
+    for (i = 0; i < ids.length; i++) { ids[i].removeAttribute('id'); }
+    raiz.setAttribute('aria-hidden', 'true');
+    raiz.classList.add('tg-busca-qv-saindo');
+    S.painel.addEventListener('animationend', function (ev) { if (ev.target === S.painel) { tirar(); } });
+    setTimeout(tirar, TG_QV_SAIDA_MS);
+  } catch (e) { tirar(); }
+}
+
+function tgQvLimpar(S) {
+  try { clearTimeout(S.tOk); clearTimeout(S.tAviso); clearTimeout(S.tVira); } catch (e) {}
+  try { if (S.peIo) { S.peIo.disconnect(); } if (S.peIoFim) { S.peIoFim.disconnect(); } if (S.peRo) { S.peRo.disconnect(); } } catch (e) {}
+  S.lupa = null;
+}
+
+// "Voltar" do cabecalho: so aparece depois que a cliente trocou de cor dentro do modal; cada toque volta uma cor, ate a original.
+function tgQvAtualizarVoltar(S) {
+  try {
+    if (!S.bVoltar) { return; }
+    if (S.historico && S.historico.length) { S.bVoltar.removeAttribute('hidden'); return; }
+    if (document.activeElement === S.bVoltar) { try { S.painel.focus({ preventScroll: true }); } catch (e) {} }
+    S.bVoltar.setAttribute('hidden', 'hidden');
+  } catch (e) {}
+}
+
+function tgQvVoltar(S) {
+  var alvo = null;
+  if (S.fechado || S.ocupado || !S.historico) { return; }
+  while (S.historico.length && (!alvo || alvo === S.item)) { alvo = S.historico.pop(); }
+  if (!alvo || alvo === S.item) { tgQvAtualizarVoltar(S); return; }
+  tgQvTrocarItem(S, alvo, true);
+}
+
+// Troca a peca mostrada (outra cor) sem fechar o modal: guarda a anterior para o "Voltar", vira a pagina e volta ao topo (a foto).
+function tgQvTrocarItem(S, alvo, volta) {
+  if (!alvo || alvo === S.item || S.ocupado || S.fechado) { return; }
+  if (!volta) {
+    S.historico.push(S.item);
+    if (S.historico.length > TG_QV_HIST_MAX) { S.historico.shift(); }
+  }
+  S.item = alvo;
+  S.confirmado = false;
+  clearTimeout(S.tOk);
+  tgQvAvisoFechar(S);
+  tgQvEmitir(S, 'tg_qv_cor', { position: S.irmaos.indexOf(alvo), reason: volta ? 'voltar' : 'cor' });
+  tgQvCarregar(S);
+  tgQvPintar(S);
+  tgQvAtualizarVoltar(S);
+  tgQvVirar(S, volta);
+  tgQvTopo(S);
+}
+
+// Pagina virando (foto e informacoes giram de leve e entram de lado, ~0,34 s); para tras no "Voltar". Sem animacao com movimento reduzido.
+function tgQvVirar(S, volta) {
+  var alvos = [S.gal, S.inf], i, n;
+  if (tgQvReduzido()) { return; }
+  try {
+    clearTimeout(S.tVira);
+    for (i = 0; i < alvos.length; i++) {
+      n = alvos[i];
+      if (!n) { continue; }
+      n.classList.remove('tg-busca-qv-virando');
+      n.classList.remove('tg-busca-qv-virando-volta');
+      void n.offsetWidth;
+      n.classList.add('tg-busca-qv-virando');
+      if (volta) { n.classList.add('tg-busca-qv-virando-volta'); }
+    }
+    S.tVira = setTimeout(function () {
+      for (i = 0; i < alvos.length; i++) { if (alvos[i]) { alvos[i].classList.remove('tg-busca-qv-virando'); alvos[i].classList.remove('tg-busca-qv-virando-volta'); } }
+    }, 450);
+  } catch (e) {}
+}
+
+// Volta a rolagem do modal ao topo (a foto). No celular rola o corpo; no desktop, as colunas da foto e das informacoes.
+function tgQvTopo(S) {
+  var caixas = [S.rolagem, S.gal, S.inf], suave = !tgQvReduzido(), i, c;
+  for (i = 0; i < caixas.length; i++) {
+    c = caixas[i];
+    if (!c || !c.scrollTop) { continue; }
+    try { c.scrollTo({ top: 0, behavior: suave ? 'smooth' : 'auto' }); } catch (e) { try { c.scrollTop = 0; } catch (e2) {} }
+  }
+}
+
+// Foto ampliada (toque/clique na foto): fundo escuro sobre tudo, foto inteira (contain), passa as fotos com o dedo (celular) ou com as setas e o
+// teclado (desktop), contador, x e Esc. O foco vai para o x e volta para a foto que estiver na tela ao fechar.
+function tgQvLupaAbrir(S, fotos, k, origem, aoFechar) {
+  var lupa = null, trilho, conta = null, bAnt = null, bProx = null, bFechar, n = fotos ? fotos.length : 0, raf = 0, atual = 0;
+  try {
+    if (S.fechado || !n) { return; }
+    if (S.lupa) { tgQvLupaFechar(S); }
+    trilho = tgQvNo('div', 'tg-busca-qv-lupa-trilho');
+    fotos.forEach(function (u, i) {
+      trilho.appendChild(tgQvNo('div', 'tg-busca-qv-lupa-quadro', [el('img', { src: u, alt: 'Foto ' + (i + 1) + ' de ' + n + ': ' + S.item.n, decoding: 'async', loading: Math.abs(i - k) < 2 ? 'eager' : 'lazy' })]));
+    });
+    bFechar = tgQvNo('button', 'tg-busca-qv-lupa-fechar', ['×'], { type: 'button', 'aria-label': 'Fechar fotos' });
+    if (n > 1) {
+      conta = tgQvNo('p', 'tg-busca-qv-lupa-conta', null, { 'aria-live': 'polite' });
+      bAnt = tgQvNo('button', 'tg-busca-qv-lupa-ant', null, { type: 'button', 'aria-label': 'Foto anterior' });
+      bProx = tgQvNo('button', 'tg-busca-qv-lupa-prox', null, { type: 'button', 'aria-label': 'Próxima foto' });
+    }
+    lupa = tgQvNo('div', 'tg-busca-qv-lupa', [trilho, conta, bAnt, bProx, bFechar], { role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Fotos ampliadas: ' + S.item.n });
+    function largura() { return trilho.clientWidth || 1; }
+    function marcar() {
+      atual = Math.min(Math.max(Math.round(trilho.scrollLeft / largura()), 0), n - 1);
+      if (conta) { conta.textContent = (atual + 1) + ' / ' + n; }
+    }
+    function ir(i, suave) {
+      i = ((i % n) + n) % n;
+      try { trilho.scrollTo({ left: i * largura(), behavior: suave && !tgQvReduzido() ? 'smooth' : 'auto' }); } catch (e) { trilho.scrollLeft = i * largura(); }
+      if (!suave) { marcar(); }
+    }
+    trilho.addEventListener('scroll', function () {
+      if (raf) { return; }
+      raf = (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () { raf = 0; marcar(); });
+    }, { passive: true });
+    // tocar no escuro (fora da foto) tambem fecha
+    trilho.addEventListener('click', function (ev) { if (ev.target && ev.target.tagName !== 'IMG') { tgQvLupaFechar(S); } });
+    bFechar.addEventListener('click', function () { tgQvLupaFechar(S); });
+    if (bAnt) { bAnt.addEventListener('click', function () { ir(atual - 1, true); }); }
+    if (bProx) { bProx.addEventListener('click', function () { ir(atual + 1, true); }); }
+    S.lupa = { no: lupa, passo: function (d) { ir(atual + d, true); }, atual: function () { return atual; }, origem: origem, aoFechar: aoFechar };
+    S.painel.setAttribute('aria-hidden', 'true');
+    S.raiz.appendChild(lupa);
+    ir(k, false);
+    try { bFechar.focus({ preventScroll: true }); } catch (e) {}
+    tgQvEmitir(S, 'tg_qv_foto', { position: k });
+  } catch (e) {
+    try { if (lupa && lupa.parentNode) { lupa.parentNode.removeChild(lupa); } } catch (e2) {}
+    S.lupa = null;
+    try { S.painel.removeAttribute('aria-hidden'); } catch (e3) {}
+  }
+}
+
+function tgQvLupaFechar(S) {
+  var L = S.lupa, i = 0, alvo = null;
+  if (!L) { return; }
+  S.lupa = null;
+  try { i = L.atual(); } catch (e) {}
+  try { if (L.no.parentNode) { L.no.parentNode.removeChild(L.no); } } catch (e) {}
+  try { S.painel.removeAttribute('aria-hidden'); } catch (e) {}
+  try { if (typeof L.aoFechar === 'function') { alvo = L.aoFechar(i); } } catch (e) {}
+  alvo = alvo || L.origem;
+  try { if (alvo && document.contains(alvo)) { alvo.focus({ preventScroll: true }); } else { S.painel.focus({ preventScroll: true }); } } catch (e) {}
+}
+
+// Setas com a foto ampliada aberta passam as fotos. Esc (fecha so a foto) e Tab (fica dentro da foto ampliada) estao no teclado do modal.
+function tgQvLupaSetas(S, ev) {
+  var L = S.lupa;
+  if (!L) { return false; }
+  if (ev.key === 'ArrowLeft' || ev.keyCode === 37) { L.passo(-1); return true; }
+  if (ev.key === 'ArrowRight' || ev.keyCode === 39) { L.passo(1); return true; }
+  return false;
+}
+
+// Sacola (v15): o modal fica aberto e confirma ali mesmo. O botao vira "Adicionada a sacola" com check por ~2 s e um aviso discreto oferece
+// "Ver sacola" (o aviso fica numa regiao role=status que ja existe, para o leitor de tela anunciar).
+function tgQvConfirmar(S) {
+  S.confirmado = true;
+  tgQvAtualizarRodape(S);
+  clearTimeout(S.tOk);
+  S.tOk = setTimeout(function () {
+    if (S.fechado || !S.confirmado) { return; }
+    var foco = document.activeElement === S.bAdd;
+    S.confirmado = false;
+    tgQvAtualizarRodape(S);
+    if (foco) { try { S.bAdd.focus({ preventScroll: true }); } catch (e) {} }
+  }, TG_QV_OK_MS);
+  tgQvAvisoMostrar(S);
+}
+
+function tgQvAvisoMostrar(S) {
+  var ver;
+  try {
+    if (!S.aviso) { return; }
+    clearTimeout(S.tAviso);
+    S.aviso.textContent = '';
+    ver = tgQvNo('button', 'tg-busca-qv-aviso-ver', ['Ver sacola'], { type: 'button' });
+    ver.addEventListener('click', function () { tgQvVerSacola(S); });
+    S.aviso.appendChild(tgQvNo('p', 'tg-busca-qv-aviso-txt', ['Peça adicionada à sacola']));
+    S.aviso.appendChild(ver);
+    S.aviso.removeAttribute('hidden');
+    S.tAviso = setTimeout(function () { tgQvAvisoFechar(S); }, TG_QV_AVISO_MS);
+  } catch (e) {}
+}
+
+function tgQvAvisoFechar(S) {
+  try {
+    clearTimeout(S.tAviso);
+    if (!S.aviso || S.aviso.hasAttribute('hidden')) { return; }
+    if (S.aviso.contains(document.activeElement)) { try { S.bAdd.focus({ preventScroll: true }); } catch (e) {} }
+    S.aviso.setAttribute('hidden', 'hidden');
+    S.aviso.textContent = '';
+  } catch (e) {}
+}
+
+// "Ver sacola": fecha o modal e, se a busca (overlay #tg-busca-overlay) estiver aberta, fecha a busca tambem; so entao abre a sacola do tema.
+// Causa do "nada acontece" na busca inicial (25/11): la o modal abre dentro do overlay da busca (z-index alto) e a sacola do tema abria ATRAS dele.
+function tgQvVerSacola(S) {
+  var ov = null, espera = 80;
+  tgQvEmitir(S, 'tg_qv_ver_sacola');
+  tgQvSacolaPedida = Date.now();
+  try { ov = document.querySelector('#tg-busca-overlay.tg-busca-aberto'); } catch (e) {}
+  tgQvFechar('sacola');
+  if (ov) {
+    try { if (typeof tgOvFechar === 'function') { tgOvFechar(); espera = 450; } } catch (e) {}
+  }
+  setTimeout(tgAbrirSacolaDoTema, espera);
+}
+
 function tgQvFechar(motivo) {
   var S = tgQvAtivo;
   if (!S) { return; }
   tgQvAtivo = null;
-  try { document.removeEventListener('keydown', S.teclas, true); } catch (e) {}
-  try { if (S.raiz && S.raiz.parentNode) { S.raiz.parentNode.removeChild(S.raiz); } } catch (e) {}
-  try { document.body.style.overflow = S.overflowCorpo; document.documentElement.style.overflow = S.overflowHtml; } catch (e) {}
   S.fechado = true;
+  try { document.removeEventListener('keydown', S.teclas, true); } catch (e) {}
+  try { tgQvLimpar(S); } catch (e) {}
+  // trocar de modal (ou falha) tira na hora; os demais motivos saem animados (deslizando no celular, fade + escala no desktop)
+  tgQvSair(S, motivo !== 'trocou' && motivo !== 'erro');
+  try { document.body.style.overflow = S.overflowCorpo; document.documentElement.style.overflow = S.overflowHtml; } catch (e) {}
   try { if (S.foco && S.foco.focus && document.contains(S.foco)) { S.foco.focus({ preventScroll: true }); } } catch (e) {}
   try { if (typeof S.opcoes.aoFechar === 'function') { S.opcoes.aoFechar(motivo || 'fechar'); } } catch (e) {}
 }
 
 function tgQuickViewAbrir(item, opcoes) {
-  var S, raiz, fundo, painel, cab, titulo, bFechar, rolagem, gal, inf, pe, bAdd, aPagina;
+  var S, raiz, fundo, painel, cab, titulo, bFechar, bVoltar, rolagem, gal, inf, pe, bAdd, aPagina;
   try {
     if (!item || typeof item !== 'object' || !urlProduto(item.s)) { return; }
     opcoes = opcoes && typeof opcoes === 'object' ? opcoes : {};
@@ -6468,7 +8084,7 @@ function tgQuickViewAbrir(item, opcoes) {
       tam: typeof opcoes.tamanhoInicial === 'string' ? opcoes.tamanhoInicial : null, msg: '', msgErro: false, ocupado: false,
       origem: typeof opcoes.origem === 'string' && /^[a-z0-9_-]{1,30}$/.test(opcoes.origem) ? opcoes.origem : 'qv',
       foco: document.activeElement, overflowCorpo: document.body.style.overflow, overflowHtml: document.documentElement.style.overflow,
-      botoesTam: [], fechado: false
+      botoesTam: [], fechado: false, historico: [], confirmado: false
     };
     tgQvAtivo = S;
 
@@ -6479,7 +8095,10 @@ function tgQuickViewAbrir(item, opcoes) {
     // Como o modal da pagina Influenciadoras: rotulo no cabecalho; nome, preco, cores e descricao no corpo; peca, tamanhos e botao no rodape fixo.
     titulo = tgQvNo('h2', 'tg-busca-qv-titulo', [item.n], { id: 'tg-busca-qv-titulo' });
     bFechar = tgQvNo('button', 'tg-busca-qv-fechar', ['×'], { type: 'button', 'aria-label': 'Fechar' });
-    cab = tgQvNo('div', 'tg-busca-qv-cab', [tgQvNo('div', 'tg-busca-qv-alca', [el('span')]), tgQvNo('p', 'tg-busca-qv-cab-rotulo', ['Detalhes da peça']), bFechar]);
+    // v15: "Voltar" antes do rotulo, escondido ate a cliente trocar de cor dentro do modal
+    bVoltar = tgQvNo('button', 'tg-busca-qv-voltar', ['Voltar'], { type: 'button', 'aria-label': 'Voltar para a cor anterior' });
+    bVoltar.setAttribute('hidden', 'hidden');
+    cab = tgQvNo('div', 'tg-busca-qv-cab', [tgQvNo('div', 'tg-busca-qv-alca', [el('span')]), tgQvNo('div', 'tg-busca-qv-cab-esq', [bVoltar, tgQvNo('p', 'tg-busca-qv-cab-rotulo', ['Detalhes da peça'])]), bFechar]);
     gal = tgQvNo('div', 'tg-busca-qv-gal');
     inf = tgQvNo('div', 'tg-busca-qv-inf');
     rolagem = tgQvNo('div', 'tg-busca-qv-rolagem', [gal, inf]);
@@ -6487,24 +8106,29 @@ function tgQuickViewAbrir(item, opcoes) {
     aPagina = tgQvNo('a', 'tg-busca-qv-pagina', ['Ver página completa'], { href: urlProduto(item.s) });
     S.pePeca = tgQvNo('div', 'tg-busca-qv-pe-peca');
     S.peTam = tgQvNo('div', 'tg-busca-qv-pe-tam');
-    pe = tgQvNo('div', 'tg-busca-qv-pe', [S.pePeca, S.peTam, bAdd]);
+    // aviso da sacola ("Peca adicionada" + "Ver sacola"): regiao role=status criada vazia para o leitor de tela anunciar quando encher
+    S.aviso = tgQvNo('div', 'tg-busca-qv-aviso', null, { role: 'status', 'aria-live': 'polite' });
+    S.aviso.setAttribute('hidden', 'hidden');
+    pe = tgQvNo('div', 'tg-busca-qv-pe', [S.aviso, S.pePeca, S.peTam, bAdd]);
     painel.appendChild(cab); painel.appendChild(rolagem); painel.appendChild(pe);
     raiz.appendChild(fundo); raiz.appendChild(painel);
-    S.raiz = raiz; S.painel = painel; S.titulo = titulo; S.gal = gal; S.inf = inf; S.bAdd = bAdd; S.aPagina = aPagina; S.bFechar = bFechar; S.pe = pe; S.rolagem = rolagem;
+    S.raiz = raiz; S.painel = painel; S.titulo = titulo; S.gal = gal; S.inf = inf; S.bAdd = bAdd; S.aPagina = aPagina; S.bFechar = bFechar; S.bVoltar = bVoltar; S.pe = pe; S.rolagem = rolagem;
 
     fundo.addEventListener('click', function () { tgQvFechar('fundo'); });
     bFechar.addEventListener('click', function () { tgQvFechar('botao'); });
     bAdd.addEventListener('click', function () { tgQvAdicionar(S); });
+    bVoltar.addEventListener('click', function () { tgQvVoltar(S); });
     aPagina.addEventListener('click', function () { tgQvEmitir(S, 'tg_qv_ver_pagina'); });
     S.teclas = function (ev) {
       var f, a;
       if (S.fechado) { return; }
-      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.preventDefault(); ev.stopPropagation(); tgQvFechar('esc'); return; }
+      if (S.lupa && tgQvLupaSetas(S, ev)) { return; }
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.preventDefault(); ev.stopPropagation(); if (S.lupa) { tgQvLupaFechar(S); return; } tgQvFechar('esc'); return; }
       if (ev.key === 'Tab' || ev.keyCode === 9) {
-        f = tgQvFocaveis(S.painel);
+        f = tgQvFocaveis(S.lupa ? S.lupa.no : S.painel);
         if (!f.length) { ev.preventDefault(); return; }
         a = document.activeElement;
-        if (!S.painel.contains(a)) { ev.preventDefault(); f[0].focus(); return; }
+        if (!(S.lupa ? S.lupa.no : S.painel).contains(a)) { ev.preventDefault(); f[0].focus(); return; }
         if (a === S.painel) { ev.preventDefault(); (ev.shiftKey ? f[f.length - 1] : f[0]).focus(); return; }
         if (ev.shiftKey && a === f[0]) { ev.preventDefault(); f[f.length - 1].focus(); } else if (!ev.shiftKey && a === f[f.length - 1]) { ev.preventDefault(); f[0].focus(); }
       }
@@ -6514,7 +8138,7 @@ function tgQuickViewAbrir(item, opcoes) {
 
     document.body.style.overflow = 'hidden';
     document.documentElement.style.overflow = 'hidden';
-    document.body.appendChild(raiz);
+    tgQvPor(raiz);
     try { painel.focus({ preventScroll: true }); } catch (e) {}
     tgQvEmitir(S, 'tg_qv_abrir', { position: S.irmaos.indexOf(item), results_count: S.irmaos.length });
     tgQvPintar(S);
@@ -6567,7 +8191,15 @@ function tgQvPintarGaleria(S) {
   S.gal.style.display = '';
   trilho = tgQvNo('div', 'tg-busca-qv-trilho' + (fotos.length === 1 ? ' tg-busca-qv-trilho-uma' : ''), null, { role: 'group', 'aria-label': 'Fotos de ' + S.item.n });
   fotos.forEach(function (u, k) {
-    var q = tgQvNo('div', 'tg-busca-qv-quadro', [el('img', { src: u, alt: k === 0 ? S.item.n : '', loading: k < 2 ? 'eager' : 'lazy', decoding: 'async' })]);
+    // v15: tocar/clicar na foto abre a foto ampliada (fundo escuro, foto inteira); ao fechar, a galeria fica na foto que estava na tela
+    var q = tgQvNo('button', 'tg-busca-qv-quadro', [el('img', { src: u, alt: k === 0 ? S.item.n : '', loading: k < 2 ? 'eager' : 'lazy', decoding: 'async' })], { type: 'button', 'aria-label': 'Ampliar foto ' + (k + 1) + ' de ' + fotos.length });
+    q.addEventListener('click', function () {
+      tgQvLupaAbrir(S, fotos, k, q, function (i) {
+        if (!quadros[i]) { return null; }
+        try { trilho.scrollLeft = quadros[i].offsetLeft - quadros[0].offsetLeft; } catch (e) {}
+        return quadros[i];
+      });
+    });
     quadros.push(q); trilho.appendChild(q);
   });
   palco = tgQvNo('div', 'tg-busca-qv-palco', [trilho]);
@@ -6616,6 +8248,7 @@ function tgQvPintarTamanhos(S) {
     (function (tt, idx) {
       b.addEventListener('click', function () {
         if (!tt.disponivel || S.ocupado) { return; }
+        if (S.confirmado) { S.confirmado = false; clearTimeout(S.tOk); }
         S.tam = S.tam === tt.rotulo ? null : tt.rotulo;
         S.msg = ''; S.msgErro = false;
         if (S.tam) { tgQvEmitir(S, 'tg_qv_tamanho', { position: idx }); }
@@ -6649,8 +8282,9 @@ function tgQvAtualizarRodape(S) {
     S.aPagina.setAttribute('class', 'tg-busca-qv-pagina');
     if (S.inf && S.aPagina.parentNode !== S.inf) { S.inf.appendChild(S.aPagina); }
   }
-  if (S.ocupado) { texto = 'Adicionando…'; } else if (esgotada) { texto = 'Peça esgotada nesta cor'; } else { texto = 'Adicionar à sacola'; }
+  if (S.ocupado) { texto = 'Adicionando…'; } else if (S.confirmado) { texto = 'Adicionada à sacola'; } else if (esgotada) { texto = 'Peça esgotada nesta cor'; } else { texto = 'Adicionar à sacola'; }
   S.bAdd.textContent = texto;
+  if (S.confirmado && !S.ocupado) { S.bAdd.classList.add('tg-busca-qv-add-ok'); } else { S.bAdd.classList.remove('tg-busca-qv-add-ok'); }
   if (d && S.algumDisponivel && !S.ocupado) { S.bAdd.removeAttribute('disabled'); S.bAdd.removeAttribute('aria-disabled'); } else { S.bAdd.setAttribute('disabled', 'disabled'); S.bAdd.setAttribute('aria-disabled', 'true'); }
   if (S.msgEl) {
     // sem dica fixa: o botao fica ativo e, se a cliente tocar sem tamanho, a mensagem pede o tamanho (o rodape fica mais baixo)
@@ -6695,21 +8329,22 @@ function tgQvPintarDescricao(S) {
   if (accs.firstChild) { S.inf.appendChild(accs); }
 }
 
-// Bloco recolhivel: botao com aria-expanded e corpo com hidden (abre e fecha sem animacao de altura; leitor de tela anuncia o estado).
+// Bloco recolhivel em gaveta (v15): a altura anima de 0 ao conteudo (grid-template-rows 0fr -> 1fr, classe tg-busca-qv-acc-aberta). Fechado, o
+// conteudo fica com visibility:hidden (fora do leitor de tela e do Tab); o botao anuncia o estado por aria-expanded.
 function tgQvSanfona(S, titulo, corpo, chave) {
-  var id = 'tg-busca-qv-acc-' + chave, aberto = !!(S.abertos && S.abertos[chave]), bt, caixa;
+  var id = 'tg-busca-qv-acc-' + chave, aberto = !!(S.abertos && S.abertos[chave]), bt, caixa, gaveta;
   corpo.setAttribute('id', id);
-  if (!aberto) { corpo.setAttribute('hidden', 'hidden'); }
+  gaveta = tgQvNo('div', 'tg-busca-qv-acc-gaveta' + (aberto ? ' tg-busca-qv-acc-aberta' : ''), [tgQvNo('div', 'tg-busca-qv-acc-dentro', [corpo])]);
   bt = tgQvNo('button', 'tg-busca-qv-acc-bt', [titulo], { type: 'button', 'aria-expanded': aberto ? 'true' : 'false', 'aria-controls': id });
   bt.addEventListener('click', function () {
     var abrir = bt.getAttribute('aria-expanded') !== 'true';
     bt.setAttribute('aria-expanded', abrir ? 'true' : 'false');
-    if (abrir) { corpo.removeAttribute('hidden'); } else { corpo.setAttribute('hidden', 'hidden'); }
+    if (abrir) { gaveta.classList.add('tg-busca-qv-acc-aberta'); } else { gaveta.classList.remove('tg-busca-qv-acc-aberta'); }
     S.abertos = S.abertos || {};
     S.abertos[chave] = abrir;
     if (abrir) { tgQvEmitir(S, 'tg_qv_detalhes', { reason: chave }); }
   });
-  caixa = tgQvNo('div', 'tg-busca-qv-acc', [bt, corpo]);
+  caixa = tgQvNo('div', 'tg-busca-qv-acc', [bt, gaveta]);
   return caixa;
 }
 
@@ -6755,13 +8390,7 @@ function tgQvPintar(S) {
         type: 'button', 'aria-pressed': x === S.item ? 'true' : 'false', 'aria-label': 'Cor ' + lista, 'data-qv-cor': x.s
       });
       (function (alvo, pos) {
-        b.addEventListener('click', function () {
-          if (alvo === S.item || S.ocupado) { return; }
-          S.item = alvo;
-          tgQvEmitir(S, 'tg_qv_cor', { position: pos });
-          tgQvCarregar(S);
-          tgQvPintar(S);
-        });
+        b.addEventListener('click', function () { tgQvTrocarItem(S, alvo, false); });
         b.addEventListener('mouseenter', function () { tgQuickViewPrefetch(alvo); });
         b.addEventListener('focus', function () { tgQuickViewPrefetch(alvo); });
       })(x, i);
@@ -6796,7 +8425,7 @@ function tgQvPintar(S) {
 // Adicionar a sacola com o tamanho escolhido. Falha mostra aviso e deixa o link da pagina como saida.
 function tgQvAdicionar(S) {
   var d = S.dados, t, i, escolhido = null, caixa;
-  if (!d || S.ocupado) { return; }
+  if (!d || S.ocupado || S.confirmado) { return; }
   if (!S.tam) {
     S.msg = 'Escolha seu tamanho.'; S.msgErro = true;
     tgQvAtualizarRodape(S);
@@ -6807,9 +8436,17 @@ function tgQvAdicionar(S) {
   for (i = 0; i < d.tamanhos.length; i++) { t = d.tamanhos[i]; if (t.rotulo === S.tam && t.disponivel) { escolhido = t; } }
   if (!escolhido) { return; }
   S.ocupado = true; S.msg = ''; S.msgErro = false;
+  tgQvAvisoFechar(S);
   tgQvAtualizarRodape(S);
-  tgAdicionarSacola(escolhido.variantId, 1, { productId: d.productId }).then(function (r) {
-    if (r && r.ok) { tgQvEmitir(S, 'tg_qv_add', { reason: 'ok' }); return; }
+  // v15: o modal fica aberto e confirma ali (antes fechava e abria a sacola do tema, que na busca inicial ficava atras do overlay da busca)
+  tgAdicionarSacola(escolhido.variantId, 1, { productId: d.productId, abrirSacola: false, manterQuickView: true }).then(function (r) {
+    if (r && r.ok) {
+      tgQvEmitir(S, 'tg_qv_add', { reason: 'ok' });
+      if (S.fechado) { return; }
+      S.ocupado = false; S.msg = ''; S.msgErro = false;
+      tgQvConfirmar(S);
+      return;
+    }
     if (S.fechado) { return; }
     S.ocupado = false;
     tgQvEmitir(S, 'tg_qv_add', { reason: r && r.motivo === 'recusado' ? 'recusado' : 'erro' });
@@ -6818,7 +8455,9 @@ function tgQvAdicionar(S) {
       S.msg = 'O tamanho acabou de esgotar. Escolha outro.';
       tgQvPintar(S);
     } else {
-      S.msg = 'Não foi possível adicionar agora. Tente de novo ou abra a página da peça.';
+      if (r && r.motivo === 'timeout') { S.msg = 'A loja demorou para responder. Confira a sacola antes de tentar de novo.'; }
+      else if (r && (r.motivo === 'sem-ls' || r.motivo === 'produto' || r.motivo === 'dados')) { S.msg = 'Não deu para adicionar por aqui. Abra a página da peça para comprar.'; }
+      else { S.msg = 'Não foi possível adicionar agora. Verifique a conexão e tente de novo.'; }
       tgQvAtualizarRodape(S);
     }
     S.msgErro = true;
@@ -6898,12 +8537,13 @@ function tgQuickViewConjunto(conj, opcoes) {
     S.teclas = function (ev) {
       var f, a;
       if (S.fechado) { return; }
-      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.preventDefault(); ev.stopPropagation(); tgQvFechar('esc'); return; }
+      if (S.lupa && tgQvLupaSetas(S, ev)) { return; }
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.preventDefault(); ev.stopPropagation(); if (S.lupa) { tgQvLupaFechar(S); return; } tgQvFechar('esc'); return; }
       if (ev.key === 'Tab' || ev.keyCode === 9) {
-        f = tgQvFocaveis(S.painel);
+        f = tgQvFocaveis(S.lupa ? S.lupa.no : S.painel);
         if (!f.length) { ev.preventDefault(); return; }
         a = document.activeElement;
-        if (!S.painel.contains(a)) { ev.preventDefault(); f[0].focus(); return; }
+        if (!(S.lupa ? S.lupa.no : S.painel).contains(a)) { ev.preventDefault(); f[0].focus(); return; }
         if (a === S.painel) { ev.preventDefault(); (ev.shiftKey ? f[f.length - 1] : f[0]).focus(); return; }
         if (ev.shiftKey && a === f[0]) { ev.preventDefault(); f[f.length - 1].focus(); } else if (!ev.shiftKey && a === f[f.length - 1]) { ev.preventDefault(); f[0].focus(); }
       }
@@ -6912,7 +8552,7 @@ function tgQuickViewConjunto(conj, opcoes) {
     tgQvArrastar(S, cab);
     document.body.style.overflow = 'hidden';
     document.documentElement.style.overflow = 'hidden';
-    document.body.appendChild(raiz);
+    tgQvPor(raiz);
     try { painel.focus({ preventScroll: true }); } catch (e) {}
     tgQvEmitir(S, 'tg_qv_abrir', { position: 0, results_count: 2, reason: 'conjunto' });
     S.partes.forEach(function (x) {
@@ -6970,8 +8610,9 @@ function tgQvArrastar(S, cab) {
     if (!movendo) { return; }
     movendo = false;
     S.painel.removeAttribute('data-arrastando');
+    // fecha: o painel desce a partir de onde o dedo soltou (a animacao de saida parte do transform atual); senao volta ao lugar
+    if (delta > S.painel.offsetHeight / 3 || delta / Math.max(1, Date.now() - t0) > 0.6) { tgQvFechar('arrastar'); return; }
     S.painel.style.transform = '';
-    if (delta > S.painel.offsetHeight / 3 || delta / Math.max(1, Date.now() - t0) > 0.6) { tgQvFechar('arrastar'); }
   }
   cab.addEventListener('touchend', fim);
   cab.addEventListener('touchcancel', fim);
@@ -7082,7 +8723,7 @@ function tgAcTermos(consulta, cat) {
   // so o grupo digitado (vestido, calcas...): as buscas mais comuns da lista da Talgui (mistura de comprimento, tecido, modelo), nao so cores
   curadas = typeof tgSugestoesDoGrupo === 'function' ? tgSugestoesDoGrupo(consulta) : null;
   if (curadas) {
-    for (i = 0; i < curadas.length && out.length < TG_AC_TERMOS_MAX; i++) { out.push({ texto: curadas[i] }); }
+    for (i = 0; i < curadas.length && out.length < TG_AC_TERMOS_MAX; i++) { out.push({ texto: tgAcSemRepetir(curadas[i]) }); }
     return out;
   }
   toks = nq.split(' ');
@@ -7127,8 +8768,14 @@ function tgAcTermos(consulta, cat) {
   }
   n = exato ? 3 : TG_AC_TERMOS_MAX;
   for (i = 0; i < compLista.length && i < n; i++) { juntar(base + comp[compLista[i]].o); }
-  for (i = 0; i < coresLista.length; i++) { juntar(base + ult + ' ' + cores[coresLista[i]].o); }
+  for (i = 0; i < coresLista.length; i++) { juntar(tgAcSemRepetir(base + ult + ' ' + cores[coresLista[i]].o)); }
   return out;
+}
+// QA 1.3 (25/11): tira a palavra repetida em sequencia ("vestido azul azul claro" -> "vestido azul claro"), comparando sem acento
+function tgAcSemRepetir(texto) {
+  var ws = String(texto || '').split(/\s+/), out = [], i;
+  for (i = 0; i < ws.length; i++) { if (!ws[i]) { continue; } if (out.length && normalizeText(out[out.length - 1]) === normalizeText(ws[i])) { continue; } out.push(ws[i]); }
+  return out.join(' ');
 }
 
 // Bloco "Sugestoes": cada termo e um link para a busca; o botao ao lado copia o termo para o campo (sem buscar).
@@ -7179,14 +8826,33 @@ function tgAcLinha(p, posicao, consulta, corrigiu, info, extra) {
       pilulas(p.sz, 8, extra && extra.tamanhos)
     ])
   ]);
-  a.addEventListener('click', function () {
+  a.addEventListener('click', function (ev2) {
     var ev = { position: posicao, query_len: consulta.length, had_correction: corrigiu ? 'sim' : 'nao', engine_version: tgCtx.versao };
     if (curada) { ev.rescue_type = 'curada'; }
     if (esgotado) { ev.rescue_type = 'esgotado'; }
     tgRecSalvar(consulta);
     try { emitir('tg_busca_sugestao_click', ev); } catch (e) {}
+    // QA 3.2 (25/11): tgAcAbrirQv - a peca abre no modal, sem sair da busca (Ctrl/Cmd/Shift/botao do meio seguem para a pagina da peca)
+    try {
+      if (soldout || ev2.ctrlKey || ev2.metaKey || ev2.shiftKey || ev2.button > 0 || typeof tgRgAbrirQuickView !== 'function') { return; }
+      ev2.preventDefault();
+      tgAcAbrirQv(p, extra && extra.tamanhos, a);
+    } catch (e) {}
   });
   return el('li', null, [a]);
+}
+// Abre o modal da peca da lista da digitacao: as outras cores vem do catalogo; o tamanho buscado ("vestido g") ja chega escolhido (QA 2).
+function tgAcAbrirQv(p, tamanhos, foco) {
+  var tam = null, i, j, up;
+  if (Array.isArray(tamanhos) && Array.isArray(p.sz)) {
+    for (i = 0; i < p.sz.length && !tam; i++) { up = String(p.sz[i]).toUpperCase(); for (j = 0; j < tamanhos.length; j++) { if (String(tamanhos[j]).toUpperCase() === up) { tam = p.sz[i]; break; } } }
+  }
+  obterCatalogo().then(function (cat) {
+    var mapa = null, g;
+    try { mapa = cat ? tgGruposCores(cat) : null; } catch (e) {}
+    g = mapa ? tgGrupoDe(mapa, p) : null;
+    tgRgAbrirQuickView(p, g && g.irmaos && g.irmaos.length ? g.irmaos : [p], tam, foco);
+  })['catch'](function () { tgRgAbrirQuickView(p, [p], tam, foco); });
 }
 
 // Aviso da busca por tamanho ("vestido G"): diz o tamanho que esta valendo, ou que nao ha em estoque e o que se mostra no lugar.
@@ -7257,14 +8923,7 @@ function tgAcPintar(pegarCaixa, input, consulta, res) {
       if (li) { linhas.push(li); }
     }
   }
-  if (!linhas.length) {
-    caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Não encontramos resultados para "', el('strong', null, [consulta]), '".']));
-    // saida util tambem no overlay: chips Em alta (a pagina de resultados cuida do resto)
-    li = tgChipsLista('overlay');
-    if (li) { caixa.appendChild(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Em alta'])); caixa.appendChild(li); }
-    caixa.classList.remove('tg-busca-oculto');
-    return;
-  }
+  if (!linhas.length) { tgAcPintarZero(caixa, consulta); return; }
   // busca pelo nome da peca (84% das buscas): as pecas vem antes das sugestoes, que ficam em no maximo 2
   porNome = !!res.suggestedTerm && !res.curada;
   termosBloco = res.termos && res.termos.length && !res.curada ? tgAcTermosBloco(porNome ? res.termos.slice(0, 2) : res.termos, consulta, input, pegarCaixa) : null;
@@ -7304,6 +8963,71 @@ function tgAcPintar(pegarCaixa, input, consulta, res) {
   }
   tgAcColunas(caixa);
   caixa.classList.remove('tg-busca-oculto');
+}
+
+// Nada encontrado no overlay (QA 4.2, 25/11): nunca uma tela vazia. A esquerda, os chips Em alta (com Conjuntos, se a lista do Recom estiver no ar);
+// a direita, a mensagem e as Novidades da semana (pecas novas em estoque, nos cards da vitrine).
+function tgAcPintarZero(caixa, consulta) {
+  var chips = tgChipsLista('overlay'), lado = [], principal;
+  tgAcLimpar(caixa);
+  if (chips) { lado.push(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Em alta'])); lado.push(chips); }
+  principal = el('div', { 'class': 'tg-busca-ov-principal' }, [el('div', { 'class': 'tg-busca-banner' }, ['Não encontramos resultados para "', el('strong', null, [consulta]), '".'])]);
+  caixa.appendChild(el('div', { 'class': 'tg-busca-ov-duas tg-busca-ov-zero' + (lado.length ? '' : ' tg-busca-ov-uma') }, [lado.length ? el('div', { 'class': 'tg-busca-ov-lado' }, lado) : null, principal]));
+  if (chips) { tgAcChipConjSeHouver(chips); }
+  tgAcNovidadesSemana(principal, consulta);
+  caixa.classList.remove('tg-busca-oculto');
+}
+// QA 4.2 (25/11): chip Conjuntos tambem nos atalhos do "nao encontramos" (so com a lista do Recom no ar)
+function tgAcChipConjSeHouver(ul) {
+  try { if (typeof tgConjuntosBaixar === 'function') { tgConjuntosBaixar().then(function (d) { if (d) { tgTapeteChipConj(ul); } }, function () {}); } } catch (e) {}
+}
+// "Novidades da semana": as pecas mais novas (categoria Novidades), em estoque, nos cards grandes da vitrine (4 por linha)
+var TG_AC_NOV_ZERO = 8;
+function tgAcNovidadesSemana(alvo, consulta) {
+  try {
+    Promise.all([obterCatalogo(), tgTapeteLimite(typeof tgPgNovidades === 'function' ? tgPgNovidades() : [], [])]).then(function (r) {
+      var cat = r[0], itens, mapa, cards = [], i, c, s, link;
+      if (!cat || !alvo.parentNode || (tgOv && tgOv.campo && tgOv.campo.value.trim() !== consulta)) { return; }
+      itens = tgNovidadesItens(cat, r[1], TG_AC_NOV_ZERO);
+      if (!itens.length) { return; }
+      mapa = tgGruposCores(cat);
+      for (i = 0; i < itens.length; i++) { c = tgRgCard(itens[i], undefined, null, { mapa: mapa, posicao: i + 1 }); if (c) { cards.push(c); } }
+      link = el('a', { 'class': 'tg-busca-tapete-todos', href: typeof TG_NOVIDADES_CATEGORIA === 'string' ? TG_NOVIDADES_CATEGORIA : '/novidades/' }, ['Ver todas as novidades']);
+      link.addEventListener('click', function () { try { emitir('tg_busca_tapete_click', { reason: 'novidades-zero:todos' }); } catch (e) {} });
+      s = tgTapeteSecao('Novidades da semana', cards, link, 'novidades');
+      if (s) { s.classList.add('tg-busca-zero-nov'); alvo.appendChild(s); }
+    }, function () {});
+  } catch (e) {}
+}
+// As pecas das Novidades (na ordem da categoria), em estoque e com 3+ tamanhos; sem a lista das Novidades, as mais vendidas em estoque
+function tgNovidadesItens(cat, handles, max) {
+  var porS = {}, out = [], i, it;
+  for (i = 0; i < cat.length; i++) { if (cat[i] && cat[i].s) { porS[cat[i].s] = cat[i]; } }
+  handles = Array.isArray(handles) ? handles : [];
+  for (i = 0; i < handles.length && out.length < max; i++) { it = porS[handles[i]]; if (it && tgDisponivel(it) && Array.isArray(it.sz) && it.sz.length >= 3) { out.push(it); } }
+  for (i = 0; i < cat.length && out.length < max; i++) { it = cat[i]; if (it && out.indexOf(it) < 0 && it.t === 1 && tgDisponivel(it) && Array.isArray(it.sz) && it.sz.length >= 3) { out.push(it); } }
+  return out;
+}
+// QA 1.4 (25/11): digitando "conjunto(s)", os pares reais do Recom entram no topo da coluna das pecas (2 por linha, como na vitrine), com "Ver todos os conjuntos"
+var TG_AC_CONJ_MAX = 4;
+function tgAcConjuntosDigitado(pegarCaixa, input, consulta, cat) {
+  if (typeof tgEhBuscaConjuntos !== 'function' || !tgEhBuscaConjuntos(consulta) || typeof tgConjuntosLista !== 'function') { return; }
+  tgConjuntosLista(cat).then(function (l) {
+    var cx = pegarCaixa(), es, ps = [], j, p, s, link, alvo;
+    try {
+      if (!Array.isArray(l) || !l.length || !cx || input.value.trim() !== consulta || cx.querySelector('[data-secao="conjuntos"]')) { return; }
+      es = tgTapeteConjuntosEscolhidos(l, [], TG_AC_CONJ_MAX);
+      for (j = 0; j < es.length; j++) { p = tgTapetePar(es[j], j + 1); if (p) { ps.push(p); } }
+      if (!ps.length) { return; }
+      link = el('a', { 'class': 'tg-busca-tapete-todos', href: urlBusca('conjuntos') }, ['Ver todos os conjuntos']);
+      link.addEventListener('click', function () { tgRecSalvar(consulta); try { emitir('tg_busca_tapete_click', { reason: 'conjuntos-digitado:todos' }); } catch (e) {} });
+      s = tgTapeteSecao('Conjuntos', ps, link, 'conjuntos');
+      if (!s) { return; }
+      s.classList.add('tg-busca-conj-digitado');
+      alvo = cx.querySelector('.tg-busca-ov-principal') || cx;
+      alvo.insertBefore(s, alvo.firstChild || null);
+    } catch (e) {}
+  }, function () {});
 }
 
 // Desktop: as sugestoes de termo vao para a coluna da esquerda; avisos, pecas e "Ver todos" ficam na da direita. Sem sugestoes, uma coluna so.
@@ -7500,6 +9224,7 @@ function tgAcDesenhar(pegarCaixa, input, consulta) {
       if (!res.esgotado && !res.curada) { res.termos = tgAcTermos(consulta, cat); }
       tgAcPintar(pegarCaixa, input, consulta, res);
       tgAcStatus(res.esgotado ? 'Peça esgotada. Veja outras opções.' : 'Peças encontradas.');
+      tgAcConjuntosDigitado(pegarCaixa, input, consulta, cat);
     }
     // Esgotado nominal: so quando a palavra pedida nao casa com nenhuma peca em estoque (tgPrecisaEsgotados). O catalogo de esgotados e baixado
     // uma vez, sob demanda; se falhar (ou demorar mais que o limite), a busca de sempre aparece, sem nenhum aviso.
@@ -7507,10 +9232,13 @@ function tgAcDesenhar(pegarCaixa, input, consulta) {
       return obterEsgotados().then(function (esg) {
         if (input.value.trim() !== consulta) { return; }
         desenhar(runSearch(consulta, cat, TG_AC_LIMITE, esg));
-      });
+      })['catch'](function () { if (input.value.trim() === consulta) { desenhar(runSearch(consulta, cat, TG_AC_LIMITE)); } });
     }
     desenhar(runSearch(consulta, cat, TG_AC_LIMITE));
-  })['catch'](function () {});
+  })['catch'](function () {
+    // QA 1.2 (25/11): algo falhou ao desenhar o termo novo: a lista do termo anterior sai e fica a mensagem de nada encontrado (nunca a lista velha)
+    try { var cx = pegarCaixa(); if (cx && input.value.trim() === consulta) { tgAcLimpar(cx); cx.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Não encontramos resultados para "', el('strong', null, [consulta]), '".'])); cx.classList.remove('tg-busca-oculto'); } } catch (e) {}
+  });
 }
 
 // ---------------------------------------------------------------- overlay
@@ -7520,11 +9248,60 @@ function tgOvFocaveis() {
   return out;
 }
 
+// ---------------------------------------------------------------- teclado no overlay (QA 4.3, 25/11)
+// Com o foco no campo: seta para baixo/cima anda pelas sugestoes, chips, pecas e "Ver todos" (na ordem da tela: coluna da esquerda, depois a das pecas);
+// para no ultimo item e, subindo do primeiro, volta ao campo. Enter abre o item destacado (sugestao = busca; peca = modal, como o clique). Esc tira o
+// destaque e, sem destaque, fecha a busca. O foco fica sempre no campo (aria-activedescendant aponta o item); o destaque e so uma classe.
+var TG_OV_NAVEGAVEIS = 'a.tg-busca-termo, a.tg-busca-chip, a.tg-busca-item, button.tg-busca-ver, a.tg-busca-todos, a.tg-busca-tapete-todos';
+var tgOvSeq = 0;
+function tgOvItens() {
+  var nos, out = [], i;
+  if (!tgOv || !tgOv.caixa) { return out; }
+  nos = tgOv.caixa.querySelectorAll(TG_OV_NAVEGAVEIS);
+  for (i = 0; i < nos.length; i++) { if (nos[i].offsetParent !== null) { out.push(nos[i]); } }
+  return out;
+}
+function tgOvMarcar(no) {
+  var velho;
+  if (!tgOv) { return; }
+  velho = tgOv.caixa.querySelector('.tg-busca-tecla');
+  if (velho && velho !== no) { velho.classList.remove('tg-busca-tecla'); velho.removeAttribute('aria-selected'); }
+  if (!no) { tgOv.campo.removeAttribute('aria-activedescendant'); return; }
+  if (!no.getAttribute('id')) { tgOvSeq++; no.setAttribute('id', 'tg-busca-op-' + tgOvSeq); }
+  no.classList.add('tg-busca-tecla');
+  no.setAttribute('aria-selected', 'true');
+  tgOv.campo.setAttribute('aria-activedescendant', no.getAttribute('id'));
+  try { no.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+}
+// Devolve true quando a tecla foi usada aqui (quem chama cancela o padrao da tecla, no keydown).
+function tgOvTecla(ev) {
+  var itens, atual, pos;
+  if (!tgOv || ev.altKey || ev.ctrlKey || ev.metaKey || ev.isComposing) { return false; }
+  if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp' && ev.key !== 'Enter' && ev.key !== 'Escape') { return false; }
+  atual = tgOv.caixa.querySelector('.tg-busca-tecla');
+  if (atual && atual.offsetParent === null) { tgOvMarcar(null); atual = null; }
+  if (ev.key === 'Escape') { if (!atual) { return false; } tgOvMarcar(null); return true; }
+  if (ev.key === 'Enter') {
+    if (!atual) { return false; } // sem destaque, o Enter envia a busca do campo (formulario)
+    atual.click(); // o mesmo caminho do clique: sugestao/chip vai para a busca; peca abre o modal (tgAcAbrirQv); VER PECA abre o modal
+    return true;
+  }
+  itens = tgOvItens();
+  if (!itens.length) { return false; }
+  pos = atual ? itens.indexOf(atual) : -1;
+  if (ev.key === 'ArrowDown') { pos = pos < 0 ? 0 : Math.min(pos + 1, itens.length - 1); tgOvMarcar(itens[pos]); }
+  else if (pos <= 0) { tgOvMarcar(null); }
+  else { tgOvMarcar(itens[pos - 1]); }
+  return true;
+}
+
 function tgOvMontar() {
   var raiz, painel, form, voltar, campo, limpar, enviar, corpo, caixa, status, espera = null;
   injetarEstilos();
   campo = el('input', { type: 'search', 'class': 'tg-busca-ov-campo', 'aria-label': 'Buscar peças' });
   tgAttr(campo, { name: 'q', placeholder: 'Busque pelo nome, tipo ou cor', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'search', inputmode: 'search', maxlength: '200' });
+  // QA 4.3: o campo controla a lista (o item destacado pelas setas vai em aria-activedescendant)
+  tgAttr(campo, { role: 'combobox', 'aria-autocomplete': 'list', 'aria-controls': 'tg-busca-sugestoes', 'aria-expanded': 'true' });
   voltar = el('button', { type: 'button', 'class': 'tg-busca-ov-btn tg-busca-ov-voltar', 'aria-label': 'Fechar a busca' }, [el('span', { 'class': 'tg-busca-ico-voltar', 'aria-hidden': 'true' })]);
   limpar = el('button', { type: 'button', 'class': 'tg-busca-ov-btn tg-busca-ov-limpar tg-busca-oculto', 'aria-label': 'Limpar o campo' }, ['×']);
   enviar = el('button', { type: 'submit', 'class': 'tg-busca-ov-btn tg-busca-ov-enviar', 'aria-label': 'Buscar' }, [el('span', { 'class': 'tg-busca-ico-lupa', 'aria-hidden': 'true' })]);
@@ -7546,7 +9323,7 @@ function tgOvMontar() {
   }
   tgOv.atualizar = atualizar;
   // o texto tambem vai para o campo nativo do tema (sem disparar eventos): se a busca nova desistir, a nativa ja tem o que foi digitado
-  campo.addEventListener('input', function () { try { if (tgOv && tgOv.nativo) { tgOv.nativo.value = campo.value; } } catch (e) {} try { atualizar(false); } catch (e) {} });
+  campo.addEventListener('input', function () { try { tgOvMarcar(null); } catch (e) {} try { if (tgOv && tgOv.nativo) { tgOv.nativo.value = campo.value; } } catch (e) {} try { atualizar(false); } catch (e) {} });
   voltar.addEventListener('click', function () { try { tgOvFechar(); } catch (e) {} });
   limpar.addEventListener('click', function () { try { campo.value = ''; atualizar(true); campo.focus(); } catch (e) {} });
   form.addEventListener('submit', function (ev) {
@@ -7558,6 +9335,8 @@ function tgOvMontar() {
   raiz.addEventListener('keydown', function (ev) {
     var f, ini, fim;
     try {
+      // QA 4.3 (25/11): setas, Enter e Esc no campo andam pelas sugestoes e pecas (keydown; ver tgOvTecla)
+      if (document.activeElement === campo && tgOvTecla(ev)) { ev.preventDefault(); return; }
       if (ev.key === 'Escape') { tgOvFechar(); return; }
       if (ev.key !== 'Tab') { return; }
       f = tgOvFocaveis();
@@ -7617,6 +9396,19 @@ function tgOvFechar() {
   } catch (e) {}
 }
 
+// A busca nova desistiu depois de a lupa ter sido clicada: a lupa passa a abrir a busca nativa, e ela abre agora (se ainda nao estiver aberta).
+var tgLupaNativa = false;
+function tgAbrirNativa() {
+  var nav, b;
+  try {
+    tgLupaNativa = true;
+    nav = document.getElementById('nav-search');
+    if (nav && nav.classList.contains('modal-show')) { return; }
+    b = document.querySelector('.js-search-button');
+    if (b) { b.click(); }
+  } catch (e) {}
+}
+
 function ligarAutocomplete() {
   var inputs = document.querySelectorAll('.js-search-input'), tocou = false, botoes, i;
   if (!inputs || !inputs.length) { return; }
@@ -7629,8 +9421,8 @@ function ligarAutocomplete() {
     try { tgOvAbrir(nativo.value, nativo); } catch (e) {}
     obterCatalogo().then(function (cat) {
       tgPend(false);
-      if (!cat) { tgOvDesistir(nativo); }
-    })['catch'](function () { tgPend(false); tgOvDesistir(nativo); });
+      if (!cat) { tgOvDesistir(nativo); tgAbrirNativa(); }
+    })['catch'](function () { tgPend(false); tgOvDesistir(nativo); tgAbrirNativa(); });
   }
   function ligar(nativo) {
     nativo.addEventListener('focus', function () {
@@ -7657,6 +9449,27 @@ function ligarAutocomplete() {
       if (campo && nav.classList.contains('modal-show') && cs.display !== 'none' && cs.visibility !== 'hidden' && r.height > 0 && r.bottom > 0 && r.top < (window.innerHeight || 0)) { primeira(); abrir(campo); }
     })();
   } catch (e) {}
+  // QA 6.1 (25/11): com a busca nova ligada, a lupa do topo abre SO o nosso overlay: o clique nao chega ao tema (o #nav-search e as classes de
+  // bloqueio do body nao entram por tras da nossa busca). O tema abre a nativa no touchend e no click da .js-search-button: os dois sao interceptados
+  // (o primeiro abre a nossa; o que vem logo depois so e engolido). Se a busca nova desistir (catalogo fora), a lupa volta a abrir a nativa (tgLupaNativa).
+  var tgLupaUltimo = 0;
+  function tgLupaToque(ev) {
+    var b, campo;
+    try {
+      b = ev.target && ev.target.closest ? ev.target.closest('.js-search-button') : null;
+      if (!b || tgAcDesistiu || tgLupaNativa) { return; }
+      campo = document.querySelector('#nav-search .js-search-input') || inputs[0];
+      if (!campo) { return; }
+      ev.preventDefault(); ev.stopPropagation(); if (ev.stopImmediatePropagation) { ev.stopImmediatePropagation(); }
+      if (Date.now() - tgLupaUltimo < 700) { return; }
+      tgLupaUltimo = Date.now();
+      primeira();
+      if (tgOv && tgOv.aberto) { tgOv.campo.focus(); return; }
+      abrir(campo);
+    } catch (e) {}
+  }
+  document.addEventListener('touchend', tgLupaToque, true);
+  document.addEventListener('click', tgLupaToque, true);
   botoes = document.querySelectorAll('.js-search-button');
   for (i = 0; i < botoes.length; i++) {
     // pointerdown vem antes do click: o pedido do catalogo (L21) sai um pouco mais cedo, sem passar a pedir nada sem interacao (L6)
@@ -7987,8 +9800,26 @@ function tgRgMontar(q, cat, esg) {
   filhos = [tgConselheira(), el('h1', { 'class': 'tg-busca-voce tg-busca-zero-titulo' }, ['Não encontramos “' + q + '”']), descTopo, tgRgForm(q), proximos];
   if (chips) { filhos.push(el('div', { 'class': 'tg-busca-secao-titulo' }, ['Em alta'])); filhos.push(chips); }
   filhos.push(descGrade);
-  filhos.push(el('div', { 'class': 'tg-busca-grade' }, cards));
+  var gradeZero = el('div', { 'class': 'tg-busca-grade' }, cards);
+  filhos.push(gradeZero);
   caixa = el('div', { id: 'tg-busca-resgate', 'class': 'tg-busca-zero container' }, filhos);
+  // QA 4.2 (25/11): chip Conjuntos no Em alta (so com a lista do Recom no ar) e, sem o "voce quis dizer", a vitrine de resgate vira "Novidades da
+  // semana" (8 pecas em estoque, 2 linhas de 4) assim que a lista das Novidades chegar
+  if (chips && typeof tgAcChipConjSeHouver === 'function') { tgAcChipConjSeHouver(chips); }
+  if (!res.suggestedTerm && !(res.tamanho && res.tamanho.aplicado) && typeof tgPgNovidades === 'function' && typeof tgNovidadesItens === 'function') {
+    tgPgNovidades().then(function (h) {
+      var its = tgNovidadesItens(cat, h, 8), mp, j, cc, novos = [];
+      try {
+        if (!its.length || !gradeZero.parentNode) { return; }
+        mp = tgGruposCores(cat);
+        for (j = 0; j < its.length; j++) { cc = tgRgCard(its[j], undefined, null, { mapa: mp, posicao: j + 1 }); if (cc) { novos.push(cc); } }
+        if (!novos.length) { return; }
+        while (gradeZero.firstChild) { gradeZero.removeChild(gradeZero.firstChild); }
+        novos.forEach(function (n) { gradeZero.appendChild(n); });
+        if (descGrade) { tgTexto(descGrade, 'Novidades da semana, disponíveis para envio imediato:'); }
+      } catch (e) {}
+    }, function () {});
+  }
   destino = tgRgDestino();
   if (!destino) { return; }
   injetarEstilos();
@@ -8143,7 +9974,7 @@ function tgHCard(p, op) {
     f,
     el('div', { 'class': 'tg-busca-hc-inf' }, [
       nome,
-      el('div', { 'class': 'tg-busca-preco tg-busca-hc-preco' }, [el('strong', null, [reais(pr.final)]), pr.de ? el('s', { 'class': 'tg-busca-de' }, [reais(pr.de)]) : null]),
+      el('div', { 'class': 'tg-busca-preco tg-busca-hc-preco' }, [el('strong', null, [reais(pr.final)]), pr.de ? el('s', { 'class': 'tg-busca-de' }, [reais(pr.de)]) : null, typeof linhaPix === 'function' ? linhaPix(pr.final) : null]), // QA 3.4 (25/11)
       cores,
       tams.length ? el('div', { 'class': 'tg-busca-hc-tams', role: 'img', 'aria-label': 'Tamanhos em estoque: ' + p.sz.join(', ') }, tams) : null,
       det
@@ -8175,13 +10006,23 @@ function tgCjMontar(lista) {
     var vistos = {}, j, f;
     for (j = 0; j < lista.length; j++) { f = corDo(lista[j]); if (f && !vistos[f.chave]) { vistos[f.chave] = true; opCores.push({ valor: f.chave, rotulo: f.rotulo }); } }
   })();
-  function filtrar() {
+  function filtrar(tams, cores) {
+    tams = tams || est.tamanhos; cores = cores || est.cores;
     return lista.filter(function (c) {
       var f;
-      if (est.tamanhos.length && typeof tgFiltrar === 'function' && !(tgFiltrar([c.cima], { tamanho: est.tamanhos }).length && tgFiltrar([c.baixo], { tamanho: est.tamanhos }).length)) { return false; }
-      if (est.cores.length) { f = corDo(c); if (!f || est.cores.indexOf(f.chave) < 0) { return false; } }
+      if (tams.length && typeof tgFiltrar === 'function' && !(tgFiltrar([c.cima], { tamanho: tams }).length && tgFiltrar([c.baixo], { tamanho: tams }).length)) { return false; }
+      if (cores.length) { f = corDo(c); if (!f || cores.indexOf(f.chave) < 0) { return false; } }
       return true;
     });
+  }
+  // QA 5.3 (25/11): os filtros conversam. Tamanho sem conjunto nas cores escolhidas fica apagado; so aparecem as cores com conjunto nos tamanhos escolhidos.
+  function opcoesTamanhoCj() {
+    return tgPgOpcoesTamanho().map(function (o) { return { valor: o.valor, rotulo: o.rotulo, desligado: !filtrar([o.valor], est.cores).length }; });
+  }
+  function opcoesCorCj() {
+    var vivos = filtrar(est.tamanhos, []);
+    if (opCores.length < 2) { return []; }
+    return opCores.filter(function (o) { return est.cores.indexOf(o.valor) >= 0 || vivos.some(function (c) { var f = corDo(c); return f && f.chave === o.valor; }); });
   }
   function lote() {
     var fim = Math.min(est.atual.length, est.mostrados + TG_CJ_LOTE), p, no;
@@ -8218,7 +10059,7 @@ function tgCjMontar(lista) {
     est.tamanhos.forEach(function (v) { micro('Tamanho ' + v, function () { alternar(est.tamanhos, v); }); });
     est.cores.forEach(function (v) { var r = v, k; for (k = 0; k < opCores.length; k++) { if (opCores[k].valor === v) { r = opCores[k].rotulo; } } micro(r, function () { alternar(est.cores, v); }); });
     if (!itens.length) { ativos.classList.add('tg-busca-oculto'); return; }
-    lim = el('button', { type: 'button', 'class': 'tg-busca-limpar-busca' }, ['Limpar busca']);
+    lim = el('button', { type: 'button', 'class': 'tg-busca-limpar-busca' }, ['Limpar filtros']); // QA 5.2 (25/11)
     lim.addEventListener('click', function () { try { est.tamanhos = []; est.cores = []; desenhar(); } catch (e) {} });
     ativos.appendChild(el('div', { 'class': 'tg-busca-ativos-lista' }, itens));
     ativos.appendChild(lim);
@@ -8228,9 +10069,9 @@ function tgCjMontar(lista) {
   mais.addEventListener('click', function () { try { lote(); } catch (e) {} });
   // desktop (v13): o mesmo Filtrar da pagina de resultados, com Tamanhos e Cores (o tamanho vale para as duas pecas do par)
   filtro = tgPgPainelFiltrar({
-    tamanhos: function () { return tgPgOpcoesTamanho(); },
+    tamanhos: opcoesTamanhoCj,
     tamanhosAtivos: function () { return est.tamanhos; },
-    cores: function () { return opCores.length > 1 ? opCores : []; },
+    cores: opcoesCorCj,
     coresAtivas: function () { return est.cores; },
     faixa: function () { return null; },
     preco: function () { return null; },
@@ -8349,6 +10190,15 @@ function tgPgMenu(rotuloBotao, opcoes, atual, aoEscolher, direita, multi) {
   return { no: wrap, botao: botao, fechar: fechar, pintar: pintar };
 }
 
+// QA 5.1 (25/11): ids das pecas que casam de verdade com a busca (as res.fortes primeiras da lista do motor). null sem a informacao do motor.
+function tgPgFortes(r) {
+  var m = {}, j, n;
+  if (!r || typeof r.fortes !== 'number' || r.fortes <= 0 || !Array.isArray(r.results)) { return null; }
+  n = Math.min(r.fortes, r.results.length);
+  for (j = 0; j < n; j++) { if (r.results[j] && r.results[j].id != null) { m[r.results[j].id] = true; } }
+  return m;
+}
+
 // Monta a pagina de resultados. Devolve true se montou (so entao a lista nativa so some).
 // Filtros que valem juntos: chip de categoria/ocasiao (troca a lista-base pela busca do chip), Novidades, tamanhos (varios) e cores (varias).
 function tgPgMontar(q, cat, res) {
@@ -8364,7 +10214,28 @@ function tgPgMontar(q, cat, res) {
   mais = el('button', { type: 'button', 'class': 'tg-busca-mais tg-busca-oculto' }, ['Ver mais']);
   verNov = el('a', { 'class': 'tg-busca-mais tg-busca-ver-nov tg-busca-oculto', href: typeof TG_NOVIDADES_CATEGORIA === 'string' ? TG_NOVIDADES_CATEGORIA : '/novidades/' }, ['Ver Novidades']);
   voce = el('h1', { 'class': 'tg-busca-voce' });
+  var tamDaBusca = false;
+  var contador = el('p', { 'class': 'tg-busca-contador', role: 'status', 'aria-live': 'polite' }); // QA 5.1 (25/11)
   vazio = el('div', { 'class': 'tg-busca-vazio tg-busca-oculto', role: 'status' });
+  // QA 5.1: acertos de verdade da busca (res.fortes do motor: as primeiras pecas da lista casam com tudo o que foi digitado; as demais sao parecidas)
+  var fortes = tgPgFortes(res);
+
+  // QA 2 (25/11): o tamanho marcado nos cards (e que ja chega escolhido no modal) e o do filtro Tamanho; sem filtro, o da busca (se o filtro nao pegou)
+  function destaqueAtual() {
+    var g = typeof TG_TAMANHO_GRUPOS !== 'undefined' && Array.isArray(TG_TAMANHO_GRUPOS) ? TG_TAMANHO_GRUPOS : [], out = [], j;
+    if (!est.tamanhos.length) { return destaque; }
+    for (j = 0; j < g.length; j++) { if (est.tamanhos.indexOf(g[j].id) >= 0) { out = out.concat(g[j].v); } }
+    return out.length ? out : est.tamanhos.slice();
+  }
+  // "379 peças encontradas": na busca da URL, so os acertos de verdade que passam nos filtros; em chip, grupo ou Novidades, a lista inteira
+  function pintarContador() {
+    var n = est.atual.length, j, k;
+    if (fortes && !est.base && !est.grupo && !est.chip && !est.novidades) {
+      for (j = 0, k = 0; j < est.atual.length; j++) { if (est.atual[j] && fortes[est.atual[j].id] === true) { k++; } }
+      if (k) { n = k; }
+    }
+    tgTexto(contador, n ? (n === 1 ? '1 peça encontrada' : n + ' peças encontradas') : '');
+  }
 
   // lista-base: a da busca da URL, ou a do chip de categoria/ocasiao escolhido
   function gAtivo() { return est.grupo || grupoQ; }
@@ -8398,15 +10269,20 @@ function tgPgMontar(q, cat, res) {
     for (j = 0; j < lista.length; j++) { if (set[lista[j].s]) { out.push(lista[j]); } }
     return out;
   }
-  // cores oferecidas: so as que existem no que a cliente ja filtrou (tamanho, categoria, novidades); as ja marcadas ficam sempre
+  // cores oferecidas: so as que existem no que a cliente ja filtrou (tamanho, preco, categoria, novidades); as ja marcadas ficam sempre
   function opcoesCor() {
-    var todas = tgPgOpcoesCor(baseItens()), vivas = tgPgOpcoesCor(tgPgFiltrar(soNovidades(baseItens()), est.tamanhos, [])), out = [], j, k, achou;
+    var todas = tgPgOpcoesCor(baseItens()), vivas = tgPgOpcoesCor(tgPgPorPreco(tgPgFiltrar(soNovidades(baseItens()), est.tamanhos, []), est.preco)), out = [], j, k, achou;
     for (j = 0; j < todas.length; j++) {
       achou = est.cores.indexOf(todas[j].valor) >= 0;
       for (k = 0; !achou && k < vivas.length; k++) { if (vivas[k].valor === todas[j].valor) { achou = true; } }
       if (achou) { out.push(todas[j]); }
     }
     return out;
+  }
+  // QA 5.3 (25/11): os 6 tamanhos, apagados (sem clique) quando nenhuma peca da combinacao atual (chip, Novidades, cores, preco) tem aquele tamanho
+  function opcoesTamanho() {
+    var base = tgPgPorPreco(tgPgFiltrar(soNovidades(baseItens()), [], est.cores), est.preco);
+    return tgPgOpcoesTamanho().map(function (o) { return { valor: o.valor, rotulo: o.rotulo, desligado: est.tamanhos.indexOf(o.valor) < 0 && !tgPgFiltrar(base, [o.valor], []).length }; });
   }
   // Novidades (filtro exclusivo, so combina com Tamanho e Cor): na ordem da categoria Novidades
   function lista() { return tgPgOrdenar(tgPgPorPreco(tgPgFiltrar(soNovidades(baseItens()), est.tamanhos, est.cores), est.preco), est.novidades ? 'lancamentos' : est.ordem, est.handles); }
@@ -8425,7 +10301,7 @@ function tgPgMontar(q, cat, res) {
   function lote() {
     var fim = Math.min(est.atual.length, est.mostrados + TG_PG_LOTE), c, p;
     for (p = est.mostrados; p < fim; p++) {
-      c = tgRgCard(est.atual[p], selos ? (selos.get(est.atual[p]) || false) : false, destaque, { mapa: mapa, posicao: p + 1 });
+      c = tgRgCard(est.atual[p], selos ? (selos.get(est.atual[p]) || false) : false, destaqueAtual(), { mapa: mapa, posicao: p + 1 });
       if (c) { grade.appendChild(c); }
     }
     est.mostrados = fim;
@@ -8464,6 +10340,7 @@ function tgPgMontar(q, cat, res) {
     while (voce.firstChild) { voce.removeChild(voce.firstChild); }
     voce.appendChild(document.createTextNode(pre));
     voce.appendChild(el('strong', null, [rot]));
+    pintarContador();
   }
   function rotuloContado(base, n) { return n ? base + ' (' + n + ')' : base; }
   function desenhar() {
@@ -8478,7 +10355,7 @@ function tgPgMontar(q, cat, res) {
         var p2, c2;
         grade.appendChild(el('h2', { 'class': 'tg-busca-grade-titulo' }, [sec.titulo]));
         for (p2 = 0; p2 < sec.itens.length; p2++) {
-          c2 = tgRgCard(sec.itens[p2], selos ? (selos.get(sec.itens[p2]) || false) : false, destaque, { mapa: mapa, posicao: p2 + 1 });
+          c2 = tgRgCard(sec.itens[p2], selos ? (selos.get(sec.itens[p2]) || false) : false, destaqueAtual(), { mapa: mapa, posicao: p2 + 1 });
           if (c2) { grade.appendChild(c2); }
         }
       });
@@ -8488,6 +10365,8 @@ function tgPgMontar(q, cat, res) {
       lote();
     }
     pintarTitulo();
+    // o aviso "Buscando por: ... no tamanho G" sai junto com o filtro do tamanho da busca
+    if (tamDaBusca && aviso) { if (est.tamanhos.length) { aviso.classList.remove('tg-busca-oculto'); } else { aviso.classList.add('tg-busca-oculto'); } }
     if (est.novidades && est.atual.length) { verNov.classList.remove('tg-busca-oculto'); } else { verNov.classList.add('tg-busca-oculto'); }
     // sem peca na combinacao: mensagem com saida
     while (vazio.firstChild) { vazio.removeChild(vazio.firstChild); }
@@ -8645,7 +10524,7 @@ function tgPgMontar(q, cat, res) {
     });
     if (est.preco) { micro(tgPgReal(est.preco.min) + ' a ' + tgPgReal(est.preco.max), function () { est.preco = null; desenhar(); }); }
     if (!itens.length) { ativos.classList.add('tg-busca-oculto'); return; }
-    lim = el('button', { type: 'button', 'class': 'tg-busca-limpar-busca' }, ['Limpar busca']);
+    lim = el('button', { type: 'button', 'class': 'tg-busca-limpar-busca' }, ['Limpar filtros']); // QA 5.2 (25/11)
     lim.addEventListener('click', function () { try { limparTudo(); emitir('tg_busca_chip', { reason: 'limpar' }); } catch (e) {} });
     ativos.appendChild(el('div', { 'class': 'tg-busca-ativos-lista' }, itens));
     ativos.appendChild(lim);
@@ -8698,7 +10577,7 @@ function tgPgMontar(q, cat, res) {
   // a barra do desktop (v13): [filtros aplicados] ........ [grade 2/3/4] [Filtrar] [Ordenar]
   if (typeof tgFiltrar === 'function') {
     filtro = tgPgPainelFiltrar({
-      tamanhos: function () { return tgPgOpcoesTamanho(); },
+      tamanhos: opcoesTamanho,
       tamanhosAtivos: function () { return est.tamanhos; },
       cores: function () { return opcoesCor(); },
       coresAtivas: function () { return est.cores; },
@@ -8742,11 +10621,27 @@ function tgPgMontar(q, cat, res) {
     try { if (ev.key === 'Escape') { for (j = 0; j < menus.length; j++) { menus[j].fechar(); } } } catch (e) {}
   });
 
+  // QA 2 (25/11): o tamanho da busca ("vestido preto g") vira o filtro Tamanho (microchip + marcado no Filtrar); a lista-base passa a ser a busca sem o
+  // tamanho, para o x do filtro (ou Limpar filtros) abrir as outras pecas. Os cards seguem marcando o tamanho, e o modal abre com ele escolhido.
+  try {
+    if (res.tamanho && res.tamanho.aplicado && res.tamanho.texto && typeof tgPgOpcoesTamanho === 'function') {
+      (function () {
+        var pedidos = (res.tamanho.pedido || []).map(function (t) { return String(t).toUpperCase(); }), ids = [], semTam, rSem, j, k, g = typeof TG_TAMANHO_GRUPOS !== 'undefined' ? TG_TAMANHO_GRUPOS : [];
+        for (j = 0; j < g.length; j++) { for (k = 0; k < g[j].v.length; k++) { if (pedidos.indexOf(String(g[j].v[k]).toUpperCase()) >= 0 && ids.indexOf(g[j].id) < 0) { ids.push(g[j].id); } } }
+        if (!ids.length) { return; }
+        rSem = runSearch(res.tamanho.texto, cat, TG_PG_LIMITE);
+        semTam = rSem.results.filter(function (it) { return urlProduto(it.s) && precoFinal(it); });
+        if (!semTam.length) { return; }
+        itens = semTam; mapa = tgGruposCores(itens); est.atual = itens; est.tamanhos = ids; destaque = null; fortes = tgPgFortes(rSem); tamDaBusca = true;
+        if (rSem.selos) { selos = rSem.selos; }
+      })();
+    }
+  } catch (e) {}
   if (res.tamanho) { aviso = tgAcAviso(res.tamanho); }
   else if (!grupoQ && !tgPgCasaNome(q, itens.slice(0, 6))) { aviso = el('div', { 'class': 'tg-busca-aviso-nome', role: 'status' }, ['Não encontramos “' + String(q).trim().slice(0, 60) + '”. Veja peças com nome parecido:']); }
   var precisaNov = urlLer();
   // chips acima da barra (Danilo, 24/11): ficam a vista, com respiro, e a barra (Ordenar, Tamanho, Cor, grade) gruda no topo ao rolar
-  filhos = [tgConselheira(), voce, aviso, chipsLinha, barra, grade, vazio, mais, verNov];
+  filhos = [tgConselheira(), voce, contador, aviso, chipsLinha, barra, grade, vazio, mais, verNov];
   raiz = el('section', { id: 'tg-busca-resultados', 'class': 'tg-busca-pagina', 'aria-label': 'Resultados da busca' }, filhos);
   injetarEstilos();
   desenhar();
@@ -8826,9 +10721,10 @@ function tgPgPainelFiltrar(o) {
     while (painel.firstChild) { painel.removeChild(painel.firstChild); }
     if (fx && fx.max > fx.min) { cols.push(el('div', { 'class': 'tg-busca-dk-col tg-busca-dk-col-preco' }, [el('p', { 'class': 'tg-busca-dk-tit' }, ['Preço']), tgPgRegua(fx, atual, o.aoPreco)])); }
     o.tamanhos().forEach(function (op) {
-      var partes = String(op.rotulo).split(' / '), ativo = o.tamanhosAtivos().indexOf(op.valor) >= 0;
-      var b = el('button', { type: 'button', 'class': 'tg-busca-dk-tam', 'aria-pressed': ativo ? 'true' : 'false', 'aria-label': 'Tamanho ' + op.rotulo }, [el('span', null, [partes[0]]), partes[1] ? el('small', null, [partes[1]]) : null]);
-      b.addEventListener('click', function () { try { o.aoTamanho(op.valor); } catch (e) {} });
+      var partes = String(op.rotulo).split(' / '), ativo = o.tamanhosAtivos().indexOf(op.valor) >= 0, sem = !!op.desligado && !ativo;
+      // QA 5.3 (25/11): tamanho sem peca na combinacao atual fica apagado e nao responde ao clique
+      var b = el('button', { type: 'button', 'class': 'tg-busca-dk-tam' + (sem ? ' tg-busca-dk-tam-sem' : ''), 'aria-pressed': ativo ? 'true' : 'false', 'aria-disabled': sem ? 'true' : null, 'aria-label': 'Tamanho ' + op.rotulo + (sem ? ' (sem peças com os filtros escolhidos)' : '') }, [el('span', null, [partes[0]]), partes[1] ? el('small', null, [partes[1]]) : null]);
+      b.addEventListener('click', function () { try { if (sem) { return; } o.aoTamanho(op.valor); } catch (e) {} });
       tams.push(b);
     });
     if (tams.length) { cols.push(el('div', { 'class': 'tg-busca-dk-col' }, [el('p', { 'class': 'tg-busca-dk-tit' }, ['Tamanhos']), el('div', { 'class': 'tg-busca-dk-tams' }, tams)])); }
@@ -9116,6 +11012,17 @@ function iniciarBusca() {
     if (!a && !r) { return; }
     if (a) { try { frente.ligarAutocomplete(); } catch (e) { dbg('autocomplete', e); } }
     if (r) { try { frente.ligarResgate(); } catch (e) { dbg('resgate', e); } }
+    // QA 5.4 (25/11): a tela (celular ou desktop) e escolhida uma vez. Se a largura cruzar 768 px na pagina de resultados (girar um tablet,
+    // redimensionar a janela), a pagina recarrega e monta a tela certa; os filtros estao na URL (tg_tam, tg_cor...), entao continuam aplicados.
+    try {
+      if (/^\/search/.test(window.location.pathname) && window.matchMedia) {
+        (function () {
+          var mq = window.matchMedia('(min-width: 768px)'), eraDesk = largura >= 768, t = 0;
+          function mudou() { clearTimeout(t); t = setTimeout(function () { try { if (mq.matches !== eraDesk) { window.location.reload(); } } catch (e) {} }, 400); }
+          if (mq.addEventListener) { mq.addEventListener('change', mudou); } else if (mq.addListener) { mq.addListener(mudou); }
+        })();
+      }
+    } catch (e) {}
   } catch (e) {}
 }
 

@@ -1816,10 +1816,17 @@ function tgTamanhosDoFiltro(valores) {
 
 // Familia de cor de uma peca, para o filtro de cores: o grupo de TG_COR_GRUPOS (Branco = Branco + Off White, Azul = todos os azuis...) ou a propria cor.
 // { chave, rotulo } ou null quando o nome nao traz cor.
+// Danilo 25/11: o filtro de cor nao separa "Preta" de "Preto", "Amarela" de "Amarelo" etc. (a cor vale no masculino).
+var TG_COR_MASCULINO = { preta: 'preto', amarela: 'amarelo', branca: 'branco', roxa: 'roxo', vermelha: 'vermelho', clara: 'claro', escura: 'escuro', dourada: 'dourado', prateada: 'prateado', alaranjada: 'alaranjado', acinzentada: 'acinzentado' };
 function tgFamiliaCor(item) {
   var cor = tgModeloCor(item && item.n).cor, n, i, rotulo;
   if (!cor) return null;
-  n = tgPalavrasCor(cor).join(' ');
+  n = tgPalavrasCor(cor).map(function (p) { return TG_COR_MASCULINO[p] || p; }).join(' ');
+  if (n === 'white') { n = 'off white'; }
+  cor = String(cor).split(/\s+/).map(function (p) {
+    var m = TG_COR_MASCULINO[normalizeText(p)];
+    return m ? m.charAt(0).toUpperCase() + m.slice(1) : p;
+  }).join(' ');
   for (i = 0; i < TG_COR_GRUPOS.length; i++) {
     if (TG_COR_GRUPOS[i].v.indexOf(n) >= 0) { rotulo = TG_COR_GRUPOS[i].g === 'branco' ? 'off-white' : TG_COR_GRUPOS[i].g; return { chave: TG_COR_GRUPOS[i].g, rotulo: rotulo === 'off-white' ? 'Off-White' : rotulo.charAt(0).toUpperCase() + rotulo.slice(1) }; }
   }
@@ -2913,6 +2920,14 @@ var TG_CSS_PAGINA = [
   '@media (prefers-reduced-motion:reduce){.tg-busca-buscando,.tg-busca-buscando-anel,.tg-busca-menu,.tg-busca-menu.tg-busca-menu-fechando,.tg-busca-grade-nova,.tg-busca-ord-cab{animation:none}.tg-busca-carrossel{scroll-behavior:auto}.tg-busca-barra-btn::after{transition:none}}'
 ];
 
+// Danilo 25/11 (pedido repetido): nome da peca SEMPRE numa linha so, com "..." no fim, em todo card (resultados, digitacao,
+// vitrine, conjuntos). Fica por ultimo e com !important para nenhuma regra mais nova voltar a quebrar em 2 linhas
+// (era isso que empurrava as bolinhas e os tamanhos para baixo nos cards de nome longo).
+var TG_CSS_NOME_1L = [
+  '.tg-busca-nome,.tg-busca-tp .tg-busca-nome,.tg-busca-hc-nome,.tg-busca-tapete .tg-busca-hc-nome,.tg-busca-conj-nome{display:block!important;min-height:0!important;-webkit-line-clamp:unset!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;word-break:normal!important;max-width:100%}',
+  '.tg-busca-card,.tg-busca-card-info,.tg-busca-tp,.tg-busca-tp-info,.tg-busca-hc,.tg-busca-hc-info{min-width:0}'
+];
+
 // Regras de cor das bolinhas, geradas da tabela TG_COR_TONS.
 function tgCssCores() {
   var out = [], i, j, nomes;
@@ -2929,7 +2944,7 @@ function tgCssVars() {
   return out + '}';
 }
 
-var TG_CSS = [tgCssVars()].concat(TG_CSS_BASE, TG_CSS_OVERLAY, TG_CSS_CARD, tgCssCores(), TG_CSS_PAGINA).join('\n');
+var TG_CSS = [tgCssVars()].concat(TG_CSS_BASE, TG_CSS_OVERLAY, TG_CSS_CARD, tgCssCores(), TG_CSS_PAGINA, TG_CSS_NOME_1L).join('\n');
 
 function injetarEstilos() {
   if (document.getElementById('tg-busca-estilos')) { return; }
@@ -7159,6 +7174,14 @@ var TG_CSS_DESK = [
   '}'
 ];
 
+// Danilo 25/11 (pedido repetido): nome da peca SEMPRE numa linha so, com "..." no fim, em todo card (resultados, digitacao,
+// vitrine, conjuntos). Fica por ultimo e com !important para nenhuma regra mais nova voltar a quebrar em 2 linhas
+// (era isso que empurrava as bolinhas e os tamanhos para baixo nos cards de nome longo).
+var TG_CSS_NOME_1L = [
+  '.tg-busca-nome,.tg-busca-tp .tg-busca-nome,.tg-busca-hc-nome,.tg-busca-tapete .tg-busca-hc-nome,.tg-busca-conj-nome{display:block!important;min-height:0!important;-webkit-line-clamp:unset!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;word-break:normal!important;max-width:100%}',
+  '.tg-busca-card,.tg-busca-card-info,.tg-busca-tp,.tg-busca-tp-info,.tg-busca-hc,.tg-busca-hc-info{min-width:0}'
+];
+
 // Regras de cor das bolinhas, geradas da tabela TG_COR_TONS.
 function tgCssCores() {
   var out = [], i, j, nomes;
@@ -7175,7 +7198,7 @@ function tgCssVars() {
   return out + '}';
 }
 
-var TG_CSS = [tgCssVars()].concat(TG_CSS_BASE, TG_CSS_OVERLAY, TG_CSS_CARD, tgCssCores(), TG_CSS_PAGINA, TG_CSS_DESK).join('\n');
+var TG_CSS = [tgCssVars()].concat(TG_CSS_BASE, TG_CSS_OVERLAY, TG_CSS_CARD, tgCssCores(), TG_CSS_PAGINA, TG_CSS_DESK, TG_CSS_NOME_1L).join('\n');
 
 function injetarEstilos() {
   if (document.getElementById('tg-busca-estilos')) { return; }

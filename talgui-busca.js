@@ -4243,8 +4243,9 @@ function tgQvAdicionar(S) {
     S.ocupado = false;
     tgQvEmitir(S, 'tg_qv_add', { reason: r && r.motivo === 'recusado' ? 'recusado' : 'erro' });
     if (r && r.motivo === 'recusado') {
-      escolhido.disponivel = false; S.tam = null;
-      S.msg = 'O tamanho acabou de esgotar. Escolha outro.';
+      // 26/11: a recusa da loja tambem vem de sobrecarga (429/5xx, comum na Black Friday), nao so de estoque; dizer "esgotou" faria a cliente
+      // desistir de uma peca que existe. Mensagem neutra e o tamanho continua escolhido, para tentar de novo.
+      S.msg = 'Não deu para adicionar este tamanho agora. Tente de novo ou escolha outro.';
       tgQvPintar(S);
     } else {
       if (r && r.motivo === 'timeout') { S.msg = 'A loja demorou para responder. Confira a sacola antes de tentar de novo.'; }
@@ -4868,17 +4869,55 @@ var TG_TAPETE_ESPERA = 4000;
 // v15 (Danilo, 25/11: a vitrine e o "tapete de boas-vindas", precisa aparecer quase no toque): o Recom nao segura mais a vitrine (espera 250 ms;
 // se chegar depois, a faixa de Conjuntos entra sozinha) e as Novidades seguram no maximo 1,5 s (depois sai com as mais vendidas). Os dados sao
 // aquecidos logo depois da pagina carregar (tgTapeteAquecer), entao na pratica ja estao prontos no 1o toque.
-var TG_TAPETE_ESPERA_NOV = 1500;
+var TG_TAPETE_ESPERA_NOV = 300; // 26/11: era 1500; com a lista guardada no aparelho e o aquecimento cedo, quase sempre ja esta pronta
 var TG_TAPETE_ESPERA_CONJ = 250;
 var TG_TAPETE_POR_GRUPO = 6;
 var TG_TAPETE_CONJ_MAX = 3;
 var TG_TAPETE_ROTULO_TODOS = { vestidos: 'Ver todos os vestidos', blusas: 'Ver todas as blusas', calcas: 'Ver todas as calças', conjuntos: 'Ver todos os conjuntos' };
 var TG_TAPETE_BUSCA_TODOS = { vestidos: 'vestido', blusas: 'blusa', calcas: 'calça', conjuntos: 'conjuntos' };
 TG_TAPETE_ROTULO_TODOS.novidades = 'Ver todas as novidades';
+// 26/11: com catalogo e Novidades prontos, baixa por tras as fotos das primeiras pecas de cada faixa da vitrine (a vitrine abre com foto)
+var tgTapeteFotosFeitas = false;
+var tgTapetePronto = null; // 26/11: vitrine ja calculada no aquecimento ({ cat, handles, v, mapa })
+// 26/11: a busca (escondida) ja com a vitrine desenhada, montada quando o aparelho estiver ocioso; o toque na lupa so a mostra
+function tgOvPreparar() {
+  function fazer() {
+    try {
+      if (tgAcDesistiu || (tgOv && tgOv.aberto) || (tgOv && tgOv.vazioPronto)) { return; }
+      if (!tgOv) { tgOvMontar(); }
+      if (tgOv.campo.value.trim()) { return; }
+      tgAcVazio(tgOv.caixa);
+    } catch (e) {}
+  }
+  try { if (typeof window.requestIdleCallback === 'function') { window.requestIdleCallback(fazer, { timeout: 1500 }); } else { setTimeout(fazer, 200); } } catch (e) { fazer(); }
+}
+var tgTapeteVista = null;
+function tgOvVitrineVista() { try { if (tgTapeteVista) { emitir('tg_busca_tapete_view', tgTapeteVista); } } catch (e) {} }
+function tgTapeteFotos() {
+  if (tgTapeteFotosFeitas || typeof obterCatalogo !== 'function' || typeof tgVitrineInicial !== 'function') { return; }
+  tgTapeteFotosFeitas = true;
+  try {
+    Promise.all([obterCatalogo(), typeof tgPgNovidades === 'function' ? tgPgNovidades() : []]).then(function (r) {
+      var v, k, i, u, im, n = 0, g = ['vestidos', 'blusas', 'calcas'];
+      if (!r[0]) { return; }
+      v = tgVitrineInicial(r[0], Array.isArray(r[1]) ? r[1] : [], 6);
+      tgTapetePronto = { cat: r[0], handles: r[1], v: v, mapa: null };
+      try { tgTapetePronto.mapa = tgGruposCores(r[0]); } catch (e) {}
+      tgOvPreparar();
+      for (k = 0; k < g.length; k++) {
+        for (i = 0; v[g[k]] && i < v[g[k]].length && i < (k ? 2 : 4); i++) {
+          u = urlImagemLeve(v[g[k]][i].i, 640);
+          if (u && n < 8) { im = new Image(); im.decoding = 'async'; im.src = u; n++; }
+        }
+      }
+    }, function () {});
+  } catch (e) {}
+}
 function tgTapeteAquecer() {
   try { if (typeof obterCatalogo === 'function') { obterCatalogo(); } } catch (e) {}
   try { if (typeof tgPgNovidades === 'function') { tgPgNovidades(); } } catch (e) {}
   try { if (typeof tgConjuntosBaixar === 'function') { tgConjuntosBaixar(); } } catch (e) {}
+  tgTapeteFotos();
 }
 function tgTapeteSecao(titulo, cards, rodape, id) {
   if (!cards.length) { return null; }
@@ -4969,8 +5008,9 @@ function tgTapetePreencher(holder, cat, chipsUl) {
       var handles = Array.isArray(r[0]) ? r[0] : [], conjs = Array.isArray(r[1]) ? r[1] : [], v, mapa, ordem = ['vestidos', 'conjuntos', 'blusas', 'calcas'], tit = { vestidos: 'Vestidos', conjuntos: 'Conjuntos', blusas: 'Blusas', calcas: 'Calças' }, k, i, cards, sec;
       if (!holder.parentNode) { return; }
       try {
-      v = tgVitrineInicial(cat, handles, TG_TAPETE_POR_GRUPO);
-      mapa = tgGruposCores(cat);
+      // 26/11: reaproveita a conta feita no aquecimento (mesmo catalogo e mesma lista de Novidades); senao calcula agora
+      if (tgTapetePronto && tgTapetePronto.cat === cat && tgTapetePronto.handles === r[0] && tgTapetePronto.mapa) { v = tgTapetePronto.v; mapa = tgTapetePronto.mapa; }
+      else { v = tgVitrineInicial(cat, handles, TG_TAPETE_POR_GRUPO); mapa = tgGruposCores(cat); }
       if (esq.parentNode) { esq.parentNode.removeChild(esq); }
       for (k = 0; k < ordem.length; k++) {
         cards = [];
@@ -4997,7 +5037,10 @@ function tgTapetePreencher(holder, cat, chipsUl) {
           } catch (e4) {}
         }, function () {});
       }
-      emitir('tg_busca_tapete_view', { reason: handles.length ? 'novidades' : 'reserva', results_count: holder.querySelectorAll('.tg-busca-hc').length });
+      tgTapeteVista = { reason: handles.length ? 'novidades' : 'reserva', results_count: holder.querySelectorAll('.tg-busca-hc').length };
+      // 26/11: montada escondida, as fotos das primeiras pecas ja carregam (com loading=lazy so carregariam depois de a busca aparecer)
+      if (tgOv && !tgOv.aberto) { try { var fts = holder.querySelectorAll('.tg-busca-carrossel img'), q; for (q = 0; q < fts.length && q < 12; q++) { fts[q].setAttribute('loading', 'eager'); } } catch (e5) {} }
+      if (tgOv && tgOv.aberto) { tgOvVitrineVista(); }
       } catch (e2) { try { if (esq.parentNode) { esq.parentNode.removeChild(esq); } } catch (e3) {} }
     })['catch'](function () { try { if (esq.parentNode) { esq.parentNode.removeChild(esq); } } catch (e) {} });
   } catch (e) {}
@@ -5025,6 +5068,7 @@ function tgAcVazio(caixa) {
   if (chips) { chips.addEventListener('click', function (ev) { try { if (ev.target && ev.target.closest && ev.target.closest('a.tg-busca-chip')) { tgAcBuscando(); } } catch (e) {} }); }
   holder = el('div', { 'class': 'tg-busca-tapete' }, [tgTapeteEsqueleto()]);
   caixa.appendChild(holder);
+  if (tgOv && caixa === tgOv.caixa) { tgOv.vazioPronto = true; }
   tgTapeteAquecer(); // v15: Novidades e Recom baixam junto com o catalogo (antes, so depois dele)
   try { if (typeof obterCatalogo === 'function') { obterCatalogo().then(function (cat) { if (cat) { tgTapetePreencher(holder, cat, chips); } })['catch'](function () {}); } } catch (e) {}
   if (!chips && !rec.length) { caixa.appendChild(el('div', { 'class': 'tg-busca-banner' }, ['Digite o tipo da peça, o nome ou a cor.'])); }
@@ -5047,6 +5091,7 @@ function tgAcCorrigiu(consulta, sugerido) {
 
 function tgAcDesenhar(pegarCaixa, input, consulta) {
   var existente, caixa;
+  if (tgOv && consulta.length >= TG_AC_MIN) { tgOv.vazioPronto = false; }
   if (consulta.length < TG_AC_MIN) {
     caixa = pegarCaixa();
     if (caixa && tgOv && caixa === tgOv.caixa) { tgAcVazio(caixa); tgAcStatus(''); return; }
@@ -5205,7 +5250,11 @@ function tgOvAbrir(valor, nativo) {
   if (typeof valor === 'string' && (!ja || tgOv.campo.value !== valor)) { tgOv.campo.value = valor; }
   // a entrada do Voltar vem antes de desenhar o conteudo (uma falha ao desenhar nao pode deixar a busca sem o Voltar)
   if (!ja) { tgHistAbrir('busca', function () { try { tgOvFechar(true); } catch (e) {} }); }
-  try { tgOv.atualizar(true); } catch (e) { dbg('overlay', e); }
+  if (!ja && !tgOv.campo.value.trim() && tgOv.vazioPronto && tgOv.caixa.querySelector('.tg-busca-tapete .tg-busca-hc:not(.tg-busca-hc-esq)')) {
+    tgOvVitrineVista();
+  } else {
+    try { tgOv.atualizar(true); } catch (e) { dbg('overlay', e); }
+  }
   try { tgOv.campo.focus(); } catch (e) {}
 }
 
@@ -5295,7 +5344,8 @@ function ligarAutocomplete() {
     (function () {
       function aquecer() { tocou = true; tgTapeteAquecer(); try { obterCatalogo().then(function (c) { if (!c) { tgLupaTirar(); } }, function () { tgLupaTirar(); }); } catch (e) {} }
       function ja() { var ric = window.requestIdleCallback; if (typeof ric === 'function') { ric(aquecer, { timeout: 2500 }); } else { setTimeout(aquecer, 1200); } }
-      if (document.readyState === 'complete') { ja(); } else { window.addEventListener('load', ja); }
+      // 26/11: nao espera o "load" da pagina (os scripts de terceiros o atrasam em varios segundos): comeca 300 ms depois de o injetor subir
+      setTimeout(aquecer, 300);
     })();
   } catch (e) {}
   // a cliente tocou na lupa antes de a busca nova chegar: o modal nativo ja esta aberto, entao a nossa abre por cima dele agora
@@ -5708,20 +5758,39 @@ function tgPgNovidades() {
       if (h.length) { tgPgNovidadesCache = Promise.resolve(h); return tgPgNovidadesCache; }
     }
   } catch (e) {}
-  tgPgNovidadesCache = new Promise(function (ok) {
+  // 26/11: guardada tambem no aparelho (24 h): usa na hora e atualiza por tras, sem a cliente esperar os ~1,7 s da pagina de Novidades
+  try {
+    guardado = JSON.parse(window.localStorage.getItem(TG_NOV_CHAVE) || 'null');
+    if (guardado && Array.isArray(guardado.h) && typeof guardado.t === 'number' && agora >= guardado.t && agora - guardado.t < TG_NOV_VALIDADE_APARELHO) {
+      h = guardado.h.filter(function (x) { return typeof x === 'string' && !!urlProduto(x); }).slice(0, TG_NOV_LIMITE);
+      if (h.length) { tgPgNovidadesCache = Promise.resolve(h); tgPgNovidadesBaixar(function () {}); return tgPgNovidadesCache; }
+    }
+  } catch (e) {}
+  tgPgNovidadesCache = new Promise(function (ok) { tgPgNovidadesBaixar(ok); });
+  return tgPgNovidadesCache;
+}
+var TG_NOV_VALIDADE_APARELHO = 24 * 60 * 60 * 1000;
+function tgPgNovidadesBaixar(ok) {
+  var base = typeof TG_NOVIDADES_CATEGORIA === 'string' ? TG_NOVIDADES_CATEGORIA : '/novidades/';
+  (function () {
     var feito = false, t = setTimeout(function () { fim([]); }, 8000);
     function fim(lista) {
       if (feito) { return; }
       feito = true; clearTimeout(t);
-      if (!lista.length) { tgPgNovidadesCache = null; } else { try { window.sessionStorage.setItem(TG_NOV_CHAVE, JSON.stringify({ t: Date.now(), h: lista })); } catch (e) {} }
+      if (!lista.length) { if (!tgPgNovidadesGuardada()) { tgPgNovidadesCache = null; } } else {
+        var g = JSON.stringify({ t: Date.now(), h: lista });
+        try { window.sessionStorage.setItem(TG_NOV_CHAVE, g); } catch (e) {}
+        try { window.localStorage.setItem(TG_NOV_CHAVE, g); } catch (e) {}
+        tgPgNovidadesCache = Promise.resolve(lista);
+      }
       ok(lista);
     }
     try {
       fetch(base + '?results_only=true&limit=' + TG_NOV_LIMITE, { credentials: 'same-origin' }).then(function (r) { return r.ok ? r.text() : ''; }).then(function (txt) { fim(txt ? tgPgHandlesDoHtml(txt).slice(0, TG_NOV_LIMITE) : []); }, function () { fim([]); });
     } catch (e) { fim([]); }
-  });
-  return tgPgNovidadesCache;
+  })();
 }
+function tgPgNovidadesGuardada() { try { return !!window.localStorage.getItem(TG_NOV_CHAVE); } catch (e) { return false; } }
 
 // Conjuntos do Recom (v12, 24/11): GET /api/conjuntos (o par e a cor sao do Recom; o CDN dele guarda 1 dia). So ids e cor sao aproveitados; o resto
 // (nome, foto, preco, tamanhos) vem do catalogo da busca, conferido na hora (tgConjuntosDoRecom). Guardado na sessao por 1 h. Falha = sem conjuntos:
@@ -5752,20 +5821,37 @@ function tgConjuntosBaixar() {
       if (v) { tgConjCache = Promise.resolve(v); return tgConjCache; }
     }
   } catch (e) {}
-  tgConjCache = new Promise(function (ok) {
+  // 26/11: tambem no aparelho (24 h), usa na hora e atualiza por tras
+  try {
+    guardado = JSON.parse(window.localStorage.getItem(TG_CONJ_CHAVE) || 'null');
+    if (guardado && typeof guardado.t === 'number' && agora >= guardado.t && agora - guardado.t < 24 * 60 * 60 * 1000) {
+      v = tgConjValidar(guardado.d);
+      if (v) { tgConjCache = Promise.resolve(v); tgConjBaixarRede(function () {}); return tgConjCache; }
+    }
+  } catch (e) {}
+  tgConjCache = new Promise(function (ok) { tgConjBaixarRede(ok); });
+  return tgConjCache;
+}
+function tgConjBaixarRede(ok) {
+  (function () {
     var feito = false, t = setTimeout(function () { fim(null); }, 5000);
     function fim(d) {
       if (feito) { return; }
       feito = true; clearTimeout(t);
-      if (!d) { tgConjCache = null; } else { try { window.sessionStorage.setItem(TG_CONJ_CHAVE, JSON.stringify({ t: Date.now(), d: d })); } catch (e) {} }
+      if (!d) { if (!tgConjGuardado()) { tgConjCache = null; } } else {
+        var g = JSON.stringify({ t: Date.now(), d: d });
+        try { window.sessionStorage.setItem(TG_CONJ_CHAVE, g); } catch (e) {}
+        try { window.localStorage.setItem(TG_CONJ_CHAVE, g); } catch (e) {}
+        tgConjCache = Promise.resolve(d);
+      }
       ok(d);
     }
     try {
       fetch(TG_CONJUNTOS_URL, { credentials: 'omit', mode: 'cors' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) { fim(tgConjValidar(j)); }, function () { fim(null); });
     } catch (e) { fim(null); }
-  });
-  return tgConjCache;
+  })();
 }
+function tgConjGuardado() { try { return !!window.localStorage.getItem(TG_CONJ_CHAVE); } catch (e) { return false; } }
 // Conjuntos prontos para a tela (lista vazia se o Recom nao respondeu ou nada passou na conferencia de estoque).
 function tgConjuntosLista(cat) {
   return tgConjuntosBaixar().then(function (d) {
@@ -8474,8 +8560,9 @@ function tgQvAdicionar(S) {
     S.ocupado = false;
     tgQvEmitir(S, 'tg_qv_add', { reason: r && r.motivo === 'recusado' ? 'recusado' : 'erro' });
     if (r && r.motivo === 'recusado') {
-      escolhido.disponivel = false; S.tam = null;
-      S.msg = 'O tamanho acabou de esgotar. Escolha outro.';
+      // 26/11: a recusa da loja tambem vem de sobrecarga (429/5xx, comum na Black Friday), nao so de estoque; dizer "esgotou" faria a cliente
+      // desistir de uma peca que existe. Mensagem neutra e o tamanho continua escolhido, para tentar de novo.
+      S.msg = 'Não deu para adicionar este tamanho agora. Tente de novo ou escolha outro.';
       tgQvPintar(S);
     } else {
       if (r && r.motivo === 'timeout') { S.msg = 'A loja demorou para responder. Confira a sacola antes de tentar de novo.'; }
@@ -9069,6 +9156,26 @@ function tgAcColunas(caixa) {
 // e o VER PECA de qualquer peca do par abre o modal com as duas. Esqueleto com a mesma altura enquanto os dados chegam; Novidades e Recom esperam no
 // maximo TG_TAPETE_ESPERA (sem Novidades = mais vendidas neutras; sem Recom = sem a secao Conjuntos).
 var TG_TAPETE_ESPERA = 4000;
+// 26/11: com catalogo e Novidades prontos, baixa por tras as fotos das primeiras pecas de cada faixa da vitrine (a vitrine abre com foto)
+var tgTapeteFotosFeitas = false;
+function tgTapeteFotos() {
+  if (tgTapeteFotosFeitas || typeof obterCatalogo !== 'function' || typeof tgVitrineInicial !== 'function') { return; }
+  tgTapeteFotosFeitas = true;
+  try {
+    Promise.all([obterCatalogo(), typeof tgPgNovidades === 'function' ? tgPgNovidades() : []]).then(function (r) {
+      var v, k, i, u, im, n = 0, g = ['vestidos', 'blusas', 'calcas'];
+      if (!r[0]) { return; }
+      v = tgVitrineInicial(r[0], Array.isArray(r[1]) ? r[1] : [], 6);
+      for (k = 0; k < g.length; k++) {
+        for (i = 0; v[g[k]] && i < v[g[k]].length && i < (k ? 2 : 4); i++) {
+          u = urlImagemLeve(v[g[k]][i].i, 640);
+          if (u && n < 8) { im = new Image(); im.decoding = 'async'; im.src = u; n++; }
+        }
+      }
+    }, function () {});
+  } catch (e) {}
+}
+
 var TG_VT_POR_GRUPO = 4;
 var TG_VT_CONJUNTOS = 2;
 var TG_VT_LINKS = { vestidos: 'vestido', blusas: 'blusa', calcas: 'calça' };
@@ -9137,8 +9244,8 @@ function tgTapetePreencher(holder, cat, chipsUl) {
     if (!esq) { esq = tgTapeteEsqueleto(); holder.appendChild(esq); }
     pConj = typeof tgConjuntosLista === 'function' ? tgConjuntosLista(cat) : Promise.resolve([]);
     Promise.all([
-      tgTapeteLimite(typeof tgPgNovidades === 'function' ? tgPgNovidades() : [], []),
-      tgTapeteLimite(pConj, [])
+      tgTapeteLimite(typeof tgPgNovidades === 'function' ? tgPgNovidades() : [], [], 300), // 26/11: era 4 s
+      tgTapeteLimite(pConj, [], 250)
     ]).then(function (r) {
       var handles = Array.isArray(r[0]) ? r[0] : [], conjs = Array.isArray(r[1]) ? r[1] : [], v, mapa, ordem = ['vestidos', 'conjuntos', 'blusas', 'calcas'], tit = { vestidos: 'Vestidos', conjuntos: 'Conjuntos', blusas: 'Blusas', calcas: 'Calças' }, k, i, itens, card, link, sec, escolhidos, par;
       if (!holder.parentNode) { return; }
@@ -9464,6 +9571,13 @@ function ligarAutocomplete() {
     });
   }
   for (i = 0; i < inputs.length; i++) { ligar(inputs[i]); }
+  // 26/11: aquece catalogo, Novidades, Conjuntos e as primeiras fotos logo depois de o injetor subir (a vitrine abre no clique)
+  setTimeout(function () {
+    try { if (typeof obterCatalogo === 'function') { obterCatalogo(); } } catch (e) {}
+    try { if (typeof tgPgNovidades === 'function') { tgPgNovidades(); } } catch (e) {}
+    try { if (typeof tgConjuntosBaixar === 'function') { tgConjuntosBaixar(); } } catch (e) {}
+    tgTapeteFotos();
+  }, 300);
   // a cliente tocou na lupa antes de a busca nova chegar: o modal nativo ja esta aberto, entao a nossa abre por cima dele agora
   try {
     (function () {
@@ -9881,20 +9995,39 @@ function tgPgNovidades() {
       if (h.length) { tgPgNovidadesCache = Promise.resolve(h); return tgPgNovidadesCache; }
     }
   } catch (e) {}
-  tgPgNovidadesCache = new Promise(function (ok) {
+  // 26/11: guardada tambem no aparelho (24 h): usa na hora e atualiza por tras, sem a cliente esperar os ~1,7 s da pagina de Novidades
+  try {
+    guardado = JSON.parse(window.localStorage.getItem(TG_NOV_CHAVE) || 'null');
+    if (guardado && Array.isArray(guardado.h) && typeof guardado.t === 'number' && agora >= guardado.t && agora - guardado.t < TG_NOV_VALIDADE_APARELHO) {
+      h = guardado.h.filter(function (x) { return typeof x === 'string' && !!urlProduto(x); }).slice(0, TG_NOV_LIMITE);
+      if (h.length) { tgPgNovidadesCache = Promise.resolve(h); tgPgNovidadesBaixar(function () {}); return tgPgNovidadesCache; }
+    }
+  } catch (e) {}
+  tgPgNovidadesCache = new Promise(function (ok) { tgPgNovidadesBaixar(ok); });
+  return tgPgNovidadesCache;
+}
+var TG_NOV_VALIDADE_APARELHO = 24 * 60 * 60 * 1000;
+function tgPgNovidadesBaixar(ok) {
+  var base = typeof TG_NOVIDADES_CATEGORIA === 'string' ? TG_NOVIDADES_CATEGORIA : '/novidades/';
+  (function () {
     var feito = false, t = setTimeout(function () { fim([]); }, 8000);
     function fim(lista) {
       if (feito) { return; }
       feito = true; clearTimeout(t);
-      if (!lista.length) { tgPgNovidadesCache = null; } else { try { window.sessionStorage.setItem(TG_NOV_CHAVE, JSON.stringify({ t: Date.now(), h: lista })); } catch (e) {} }
+      if (!lista.length) { if (!tgPgNovidadesGuardada()) { tgPgNovidadesCache = null; } } else {
+        var g = JSON.stringify({ t: Date.now(), h: lista });
+        try { window.sessionStorage.setItem(TG_NOV_CHAVE, g); } catch (e) {}
+        try { window.localStorage.setItem(TG_NOV_CHAVE, g); } catch (e) {}
+        tgPgNovidadesCache = Promise.resolve(lista);
+      }
       ok(lista);
     }
     try {
       fetch(base + '?results_only=true&limit=' + TG_NOV_LIMITE, { credentials: 'same-origin' }).then(function (r) { return r.ok ? r.text() : ''; }).then(function (txt) { fim(txt ? tgPgHandlesDoHtml(txt).slice(0, TG_NOV_LIMITE) : []); }, function () { fim([]); });
     } catch (e) { fim([]); }
-  });
-  return tgPgNovidadesCache;
+  })();
 }
+function tgPgNovidadesGuardada() { try { return !!window.localStorage.getItem(TG_NOV_CHAVE); } catch (e) { return false; } }
 
 // Conjuntos do Recom (v12, 24/11): GET /api/conjuntos (o par e a cor sao do Recom; o CDN dele guarda 1 dia). So ids e cor sao aproveitados; o resto
 // (nome, foto, preco, tamanhos) vem do catalogo da busca, conferido na hora (tgConjuntosDoRecom). Guardado na sessao por 1 h. Falha = sem conjuntos:
@@ -9925,20 +10058,37 @@ function tgConjuntosBaixar() {
       if (v) { tgConjCache = Promise.resolve(v); return tgConjCache; }
     }
   } catch (e) {}
-  tgConjCache = new Promise(function (ok) {
+  // 26/11: tambem no aparelho (24 h), usa na hora e atualiza por tras
+  try {
+    guardado = JSON.parse(window.localStorage.getItem(TG_CONJ_CHAVE) || 'null');
+    if (guardado && typeof guardado.t === 'number' && agora >= guardado.t && agora - guardado.t < 24 * 60 * 60 * 1000) {
+      v = tgConjValidar(guardado.d);
+      if (v) { tgConjCache = Promise.resolve(v); tgConjBaixarRede(function () {}); return tgConjCache; }
+    }
+  } catch (e) {}
+  tgConjCache = new Promise(function (ok) { tgConjBaixarRede(ok); });
+  return tgConjCache;
+}
+function tgConjBaixarRede(ok) {
+  (function () {
     var feito = false, t = setTimeout(function () { fim(null); }, 5000);
     function fim(d) {
       if (feito) { return; }
       feito = true; clearTimeout(t);
-      if (!d) { tgConjCache = null; } else { try { window.sessionStorage.setItem(TG_CONJ_CHAVE, JSON.stringify({ t: Date.now(), d: d })); } catch (e) {} }
+      if (!d) { if (!tgConjGuardado()) { tgConjCache = null; } } else {
+        var g = JSON.stringify({ t: Date.now(), d: d });
+        try { window.sessionStorage.setItem(TG_CONJ_CHAVE, g); } catch (e) {}
+        try { window.localStorage.setItem(TG_CONJ_CHAVE, g); } catch (e) {}
+        tgConjCache = Promise.resolve(d);
+      }
       ok(d);
     }
     try {
       fetch(TG_CONJUNTOS_URL, { credentials: 'omit', mode: 'cors' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) { fim(tgConjValidar(j)); }, function () { fim(null); });
     } catch (e) { fim(null); }
-  });
-  return tgConjCache;
+  })();
 }
+function tgConjGuardado() { try { return !!window.localStorage.getItem(TG_CONJ_CHAVE); } catch (e) { return false; } }
 // Conjuntos prontos para a tela (lista vazia se o Recom nao respondeu ou nada passou na conferencia de estoque).
 function tgConjuntosLista(cat) {
   return tgConjuntosBaixar().then(function (d) {

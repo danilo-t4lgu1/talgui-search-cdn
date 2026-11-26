@@ -2065,23 +2065,47 @@ function tgConjuntosDoRecom(catalog, resposta) {
 
 // Pagina de Conjuntos (v14, Danilo 24/11): as cores se alternam (Amarelo, Azul, Preto, ... e de novo Amarelo, Azul...), para a grade dar sensacao de
 // variedade; dentro de cada cor fica a ordem do Recom. Cor = familia de cor da peca de cima (tgFamiliaCor) ou, sem familia, a cor do Recom.
+// Danilo 26/11: a grade de Conjuntos nunca mostra duas vezes seguidas a mesma FAMILIA de cor (Amarelo e Amarelo Claro, ou Azul, Azul Claro e
+// Azul Marinho, contam como a mesma). Cada vez entra a familia com mais pares ainda por mostrar, diferente da anterior (empate: a que apareceu
+// primeiro no Recom); dentro da familia, os tons se revezam. So repete em seguida se nao houver outra familia sobrando.
+function tgCorBaseConj(c) {
+  var f = c && c.cima ? tgFamiliaCor(c.cima) : null, k = normalizeText((c && c.cor) || '') || (f && f.chave) || '?', p = k.split(' ')[0];
+  if (k.indexOf('off white') === 0 || p === 'branco' || p === 'branca' || p === 'offwhite') return 'branco';
+  return (typeof TG_COR_MASCULINO === 'object' && TG_COR_MASCULINO[p]) || p;
+}
 function tgConjuntosIntercalados(lista) {
-  var filas = {}, ordem = [], out = [], i, c, k, f, rodada, algum;
+  var fams = {}, ordem = [], itens = [], out, i, j, c, b, tom, ft, n, total = 0, troca;
   if (!Array.isArray(lista)) return [];
   for (i = 0; i < lista.length; i++) {
     c = lista[i];
     if (!c) continue;
-    // a cor do par vem do Recom (Preto/Preta viram a mesma); sem ela, a familia de cor da peca de cima
-    f = c.cima ? tgFamiliaCor(c.cima) : null;
-    k = normalizeText(c.cor || '').replace(/^(pret|branc|amarel|vermelh|roxa?)[ao]?/, '$1') || (f && f.chave) || '?';
-    if (!filas[k]) { filas[k] = []; ordem.push(k); }
-    filas[k].push(c);
+    b = tgCorBaseConj(c);
+    tom = normalizeText(c.cor || '') || '?';
+    if (!fams[b]) { fams[b] = { tons: {}, ordemTons: [], n: 0, idx: ordem.length }; ordem.push(b); }
+    ft = fams[b];
+    if (!ft.tons[tom]) { ft.tons[tom] = []; ft.ordemTons.push(tom); }
+    ft.tons[tom].push(c); ft.n++; total++;
   }
-  for (rodada = 0; ; rodada++) {
-    algum = false;
-    for (i = 0; i < ordem.length; i++) { if (filas[ordem[i]].length > rodada) { out.push(filas[ordem[i]][rodada]); algum = true; } }
-    if (!algum) break;
+  // cada familia se espalha pela grade inteira, na proporcao do tamanho dela (a j-esima peca da familia vai para perto de (j + 0,5) x total / n);
+  // dentro da familia, os tons se revezam
+  for (i = 0; i < ordem.length; i++) {
+    ft = fams[ordem[i]]; n = 0;
+    for (j = 0; n < ft.n; j++) {
+      tom = ft.ordemTons[j % ft.ordemTons.length];
+      if (!ft.tons[tom].length) continue;
+      itens.push({ c: ft.tons[tom].shift(), b: ordem[i], pos: (n + 0.5) * total / ft.n, idx: ft.idx });
+      n++;
+    }
   }
+  itens.sort(function (x, y) { return x.pos - y.pos || x.idx - y.idx; });
+  // nunca a mesma familia duas vezes seguidas: puxa para ca a proxima de outra familia (so fica repetido se nao sobrar outra)
+  for (i = 1; i < itens.length; i++) {
+    if (itens[i].b !== itens[i - 1].b) continue;
+    for (j = i + 1; j < itens.length && itens[j].b === itens[i - 1].b; j++) {}
+    if (j < itens.length) { troca = itens.splice(j, 1)[0]; itens.splice(i, 0, troca); }
+  }
+  out = [];
+  for (i = 0; i < itens.length; i++) out.push(itens[i].c);
   return out;
 }
 
@@ -2726,8 +2750,10 @@ var TG_CSS_CARD = [
   '.tg-busca-carregando{text-align:center}',
   // pagina de Conjuntos: um par por bloco, com linha fina entre os pares
   '.tg-busca-pagina-conj .tg-busca-hc-lista{gap:0}',
-  '.tg-busca-pagina-conj .tg-busca-hc-par{padding:24px 0;border-bottom:1px solid var(--tgb-cor-borda)}',
-  '.tg-busca-pagina-conj .tg-busca-hc-par:first-child{padding-top:4px}',
+  // 26/11: contorno em volta de cada conjunto (catalogo de conjuntos, cada um separado)
+  '.tg-busca-pagina-conj .tg-busca-hc-lista{gap:14px}',
+  '.tg-busca-pagina-conj .tg-busca-hc-par{padding:12px 10px;border:1px solid #e6e1da;background:var(--tgb-cor-fundo)}',
+  '.tg-busca-pagina-conj .tg-busca-hc{grid-template-columns:36% minmax(0,1fr);gap:0 12px}',
   '.tg-busca-cj-sub{margin:0 0 14px;text-align:center;font-size:12.5px;color:var(--tgb-cor-texto-suave)}',
   // barra grudada: os pais da pagina que cortavam (overflow) deixam o sticky funcionar (corte so na horizontal, sem criar rolagem)
   '.tg-busca-pai-solto{overflow:visible!important;overflow-x:clip!important}',
@@ -2866,6 +2892,31 @@ var TG_CSS_PAGINA = [
   '.tg-busca-tapete .tg-busca-hc-tams{margin-top:10px}',
   '.tg-busca-tapete button.tg-busca-hc-det{min-height:36px;margin-top:12px;padding:0 10px;font-size:12px;white-space:nowrap;gap:6px}',
   '.tg-busca-hc-toca,.tg-busca-hc.tg-busca-hc-toca .tg-busca-hc-foto{cursor:pointer}',
+  // Conjuntos (Danilo, 25/11): tamanhos clicaveis 25% maiores, aviso da outra peca e "Adicionar Conjunto à Sacola" embaixo da peca de baixo
+  '.tg-busca-hc-tams-rot{margin:14px 0 0;font-size:12.5px;color:var(--tgb-cor-texto)}',
+  // 26/11: a grade completa (6 tamanhos) cabe numa linha so: os botoes dividem a largura da coluna (ate 36 px cada)
+  '.tg-busca-hc .tg-busca-hc-tams.tg-busca-hc-tams-btn{flex-wrap:nowrap;gap:4px;width:100%;margin-top:6px}',
+  '.tg-busca-hc-tams-btn button.tg-busca-hc-tam-btn{flex:1 1 0;min-width:0;max-width:38px;height:30px;padding:0}',
+  'button.tg-busca-hc-tam-btn{min-width:30px;height:28px;padding:0 5px;border-radius:0;background:var(--tgb-cor-fundo);font:inherit;font-size:13px;line-height:1;color:var(--tgb-cor-texto);cursor:pointer;-webkit-tap-highlight-color:transparent}',
+  'button.tg-busca-hc-tam-btn.tg-busca-hc-tam-sel{border-color:var(--tgb-cor-texto);background:var(--tgb-cor-texto);color:var(--tgb-cor-fundo);font-weight:600}',
+  'button.tg-busca-hc-tam-btn:focus-visible,button.tg-busca-hc-add:focus-visible,button.tg-busca-hc-ver:focus-visible{outline:2px solid var(--tgb-cor-texto);outline-offset:2px}',
+  '.tg-busca-hc-aviso{margin:8px 0 0;font-size:12px;line-height:1.35;color:var(--tgb-cor-texto)}',
+  '.tg-busca-hc-par>.tg-busca-hc-acoes{margin:-12px 0 0}',
+  '.tg-busca-car-col>.tg-busca-hc-par>.tg-busca-hc-acoes{margin-top:0}',
+  'button.tg-busca-hc-add{display:flex;width:100%;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border:0;border-radius:0;background:var(--tgb-cor-texto);color:var(--tgb-cor-fundo);font:inherit;font-size:13px;font-weight:600;white-space:nowrap;cursor:pointer}',
+  'button.tg-busca-hc-add[aria-busy="true"]{opacity:.7;cursor:progress}',
+  // aviso de "Conjunto adicionado à sacola": o mesmo do modal (fundo escuro, Ver sacola em pilula branca)
+  '.tg-busca-hc-acoes{position:relative}',
+  '.tg-busca-cj-aviso{position:absolute;right:0;bottom:calc(100% + 10px);left:0;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 8px 8px 14px;border-radius:10px;background:#1f1f1f;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,.18);animation:tg-busca-cj-aviso .26s ease}',
+  '.tg-busca-cj-aviso.tg-busca-oculto{display:none}',
+  'p.tg-busca-cj-aviso-txt{display:flex;align-items:center;gap:10px;min-width:0;margin:0;font-size:13px;line-height:1.35;color:#fff}',
+  'p.tg-busca-cj-aviso-txt::before{content:"";flex:none;width:10px;height:5px;margin-top:-3px;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg)}',
+  'button.tg-busca-cj-aviso-ver{flex:none;min-height:40px;margin:0;padding:0 14px;border:1px solid #fff;border-radius:999px;background:#fff;color:#111;font-family:inherit;font-size:12.5px;font-weight:600;line-height:1;cursor:pointer}',
+  '@keyframes tg-busca-cj-aviso{from{opacity:0;transform:translateY(8px)}}',
+  '.tg-busca-hc-add-status{margin:8px 0 0;font-size:12px;line-height:1.4;color:var(--tgb-cor-texto)}',
+  '.tg-busca-hc-add-status:empty{display:none}',
+  '.tg-busca-hc-add-status.tg-busca-hc-add-erro{color:#a1261b}',
+  'button.tg-busca-hc-ver{padding:0;border:0;background:none;font:inherit;font-size:12px;font-weight:600;text-decoration:underline;color:var(--tgb-cor-texto);cursor:pointer}',
   // respiro entre os grupos 20% menor (era clamp(56px,12vh,104px))
   '.tg-busca-tapete-secao+.tg-busca-tapete-secao{margin-top:clamp(34px,7.2vh,62px)}',
   '.tg-busca-tapete-car>.tg-busca-tapete-todos{margin-top:12px}',
@@ -4948,7 +4999,7 @@ function tgTapeteSecaoConj(conjs, handles, max) {
   if (typeof tgConjuntosIntercalados === 'function') { conjs = tgConjuntosIntercalados(conjs); }
   for (i = 0; i < conjs.length && lista.length < TG_TAPETE_CONJ_MAX; i++) { if (lista.indexOf(conjs[i]) < 0 && (!esc || conjs[i].cor !== esc.cor)) { lista.push(conjs[i]); } }
   for (i = 0; i < conjs.length && lista.length < TG_TAPETE_CONJ_MAX; i++) { if (lista.indexOf(conjs[i]) < 0) { lista.push(conjs[i]); } }
-  for (i = 0; i < lista.length; i++) { p = tgHConjunto(lista[i], i + 1, 'conjuntos'); if (p) { cols.push([p]); } }
+  for (i = 0; i < lista.length; i++) { p = tgHConjunto(lista[i], i + 1, 'conjuntos', true); if (p) { cols.push([p]); } }
   return tgTapeteCarrossel('Conjuntos', cols, 'conjuntos');
 }
 // v15 (R1): tocar num chip ou em "Ver todos" leva a outra pagina; enquanto ela carrega, a busca mostra "Buscando resultados" (nunca a tela parada).
@@ -5867,14 +5918,15 @@ function tgEhBuscaConjuntos(q) {
 // Foto a esquerda; nome, bolinhas de cor, preco, tamanhos em estoque e "Detalhes da peca" a direita. Usado na tela inicial e na pagina de Conjuntos.
 // op: { mapa (tgGruposCores), conjunto (o par: tocar em qualquer parte abre o modal do conjunto), posicao, secao, aoAbrir }.
 function tgHCard(p, op) {
-  var href = urlProduto(p.s), pr = precoFinal(p), mc, abrir, f, nome, det, cores = null, tams = [], i, card, corUnica, g, bolas = [], lista = [], gi, ir;
+  var href = urlProduto(p.s), pr = precoFinal(p), mc, abrir, f, nome, det, cores = null, tams = [], i, card, corUnica, g, bolas = [], lista = [], gi, ir, aviso, tamsBox, inf;
   if (!href || !pr) { return null; }
   op = op || {};
   mc = typeof tgModeloCor === 'function' ? tgModeloCor(p.n) : { modelo: p.n, cor: '' };
   abrir = function (no, alvo) {
     try {
       if (typeof op.aoAbrir === 'function') { op.aoAbrir(no, alvo || p); }
-      else if (op.conjunto && typeof tgQuickViewConjunto === 'function') { tgQuickViewConjunto(op.conjunto, { aoFechar: function () { try { if (no && no.focus) { no.focus(); } } catch (e) {} }, origem: op.secao || 'conjuntos' }); }
+      // Conjuntos (Danilo, 25/11, doc Modal Conjuntos): o modal das duas pecas deixou de existir no celular; "Detalhes da peca" abre o modal DAQUELA peca
+      else if (op.conjunto) { tgRgAbrirQuickView(p, [p], null, no); }
       else { tgRgAbrirQuickView(alvo || p, op.irmaos || (tgGrupoDe(op.mapa, p) || {}).irmaos || [p], null, no); }
       emitir('tg_busca_tapete_click', { position: op.posicao || 0, reason: op.secao || '' });
     } catch (e) {}
@@ -5909,30 +5961,138 @@ function tgHCard(p, op) {
     corUnica = el('div', { 'class': 'tg-busca-cores tg-busca-hc-cores' }, [el('span', { 'class': 'tg-busca-bolinha tg-busca-bolinha-atual', 'data-cor': tgCorSlug(mc.cor), 'aria-hidden': 'true' }), el('span', { 'class': 'tg-busca-hc-cor' }, [mc.cor])]);
     cores = corUnica;
   }
-  if (Array.isArray(p.sz)) { for (i = 0; i < p.sz.length && i < 10; i++) { if (typeof p.sz[i] === 'string' && p.sz[i]) { tams.push(el('span', { 'class': 'tg-busca-hc-tam' }, [p.sz[i]])); } } }
-  card = el('div', { 'class': 'tg-busca-hc tg-busca-hc-toca' + (op.conjunto ? ' tg-busca-hc-conj' : '') }, [
-    f,
-    el('div', { 'class': 'tg-busca-hc-inf' }, [
+  if (Array.isArray(p.sz)) {
+    for (i = 0; i < p.sz.length && i < 10; i++) {
+      if (typeof p.sz[i] !== 'string' || !p.sz[i]) { continue; }
+      if (op.conjCtl) {
+        // Conjuntos (Danilo, 25/11): o tamanho e escolhido direto na grade (sz = so os tamanhos em estoque); tocar de novo desmarca
+        (function (t) {
+          var b = el('button', { type: 'button', 'class': 'tg-busca-hc-tam tg-busca-hc-tam-btn', 'aria-pressed': 'false', 'aria-label': 'Tamanho ' + t + ' de ' + p.n }, [t]);
+          b.addEventListener('click', function () { op.conjCtl.escolher(op.parte, t); }); // o clique do card ignora .tg-busca-hc-tams
+          tams.push(b);
+        })(p.sz[i]);
+      } else { tams.push(el('span', { 'class': 'tg-busca-hc-tam' }, [p.sz[i]])); }
+    }
+  }
+  if (op.conjCtl) {
+    aviso = el('p', { 'class': 'tg-busca-hc-aviso tg-busca-oculto', role: 'status', 'aria-live': 'polite' });
+    tamsBox = tams.length ? el('div', { 'class': 'tg-busca-hc-tams tg-busca-hc-tams-btn', role: 'group', 'aria-label': 'Escolha o tamanho: ' + p.n }, tams) : null;
+    op.conjCtl.registrar(op.parte, { botoes: tams, aviso: aviso });
+    inf = [
+      nome,
+      el('div', { 'class': 'tg-busca-preco tg-busca-hc-preco' }, [el('strong', null, [reais(pr.final)]), pr.de ? el('s', { 'class': 'tg-busca-de' }, [reais(pr.de)]) : null, linhaPix(pr.final)]),
+      cores,
+      det,
+      tamsBox ? el('p', { 'class': 'tg-busca-hc-tams-rot' }, ['Tamanhos']) : null,
+      tamsBox,
+      aviso
+    ];
+  } else {
+    inf = [
       nome,
       el('div', { 'class': 'tg-busca-preco tg-busca-hc-preco' }, [el('strong', null, [reais(pr.final)]), pr.de ? el('s', { 'class': 'tg-busca-de' }, [reais(pr.de)]) : null, linhaPix(pr.final)]),
       cores,
       tams.length ? el('div', { 'class': 'tg-busca-hc-tams', role: 'img', 'aria-label': 'Tamanhos em estoque: ' + p.sz.join(', ') }, tams) : null,
       det
-    ])
-  ]);
-  // v15 (Danilo, 25/11): tocar em qualquer parte do card abre o modal (antes so o botao); nunca leva para a pagina da peca
+    ];
+  }
+  card = el('div', { 'class': 'tg-busca-hc tg-busca-hc-toca' + (op.conjunto ? ' tg-busca-hc-conj' : '') }, [f, el('div', { 'class': 'tg-busca-hc-inf' }, inf)]);
+  // v15 (Danilo, 25/11): tocar em qualquer parte do card abre o modal (antes so o botao); nunca leva para a pagina da peca.
+  // Nos Conjuntos, tamanhos, aviso e o botao do conjunto nao abrem nada.
   card.addEventListener('click', function (ev) {
-    try { if (ev.target && ev.target.closest && ev.target.closest('.tg-busca-hc-det, .tg-busca-bolinha')) { return; } } catch (e) {}
+    try { if (ev.target && ev.target.closest && ev.target.closest('.tg-busca-hc-det, .tg-busca-bolinha, .tg-busca-hc-tams, .tg-busca-hc-tams-rot, .tg-busca-hc-aviso, .tg-busca-hc-acoes')) { return; } } catch (e) {}
     abrir(det);
   });
   card.addEventListener('pointerdown', function () { tgRgPrefetch(p); });
   return card;
 }
-// Um conjunto = as duas pecas em cards separados (Danilo, 24/11): tocar em qualquer uma abre o modal com as duas.
-function tgHConjunto(c, pos, secao) {
-  var a = tgHCard(c.cima, { conjunto: c, posicao: pos, secao: secao }), b = tgHCard(c.baixo, { conjunto: c, posicao: pos, secao: secao });
+// Um conjunto = as duas pecas em cards separados (Danilo, 24/11).
+// Danilo, 25/11 (doc Modal Conjuntos): os tamanhos de cada peca sao escolhidos direto na grade; escolhido um, avisa para escolher o da outra;
+// com os dois, aparece "Adicionar Conjunto à Sacola" embaixo da peca de baixo, que poe as duas pecas na sacola (a sacola nao abre sozinha).
+var TG_CJ_MASCULINOS = ['short', 'shorts', 'top', 'cropped', 'colete', 'body', 'blazer', 'macacao', 'casaco', 'kimono', 'quimono', 'sueter', 'cardigan'];
+function tgCjNomeCurto(p) {
+  var m = typeof tgModeloCor === 'function' ? tgModeloCor(p.n) : null;
+  return (m && m.modelo) || p.n;
+}
+function tgCjArtigo(p) {
+  var w = normalizeText(String(p && p.n || '')).split(' ')[0];
+  return TG_CJ_MASCULINOS.indexOf(w) >= 0 ? 'do' : 'da';
+}
+function tgCjControle(c) {
+  var sel = { cima: null, baixo: null }, ui = {}, ocupado = false, btn, status, acoes, ctl, aviso, tAviso = null;
+  function avisoFechar() { clearTimeout(tAviso); aviso.classList.add('tg-busca-oculto'); while (aviso.firstChild) { aviso.removeChild(aviso.firstChild); } }
+  function avisoMostrar() {
+    var ver = el('button', { type: 'button', 'class': 'tg-busca-cj-aviso-ver' }, ['Ver sacola']);
+    ver.addEventListener('click', function () { try { avisoFechar(); if (typeof tgQvVerSacola === 'function') { tgQvVerSacola(null); } } catch (e) {} });
+    avisoFechar();
+    aviso.appendChild(el('p', { 'class': 'tg-busca-cj-aviso-txt' }, ['Conjunto adicionado à sacola']));
+    aviso.appendChild(ver);
+    aviso.classList.remove('tg-busca-oculto');
+    tAviso = setTimeout(avisoFechar, 6000);
+  }
+  btn = el('button', { type: 'button', 'class': 'tg-busca-hc-add' }, ['ADICIONAR CONJUNTO À SACOLA']);
+  status = el('p', { 'class': 'tg-busca-hc-add-status', role: 'status', 'aria-live': 'polite' });
+  // o mesmo aviso do modal ao adicionar (fundo escuro, "Ver sacola"), por cima do botao, some sozinho em 6 s
+  aviso = el('div', { 'class': 'tg-busca-cj-aviso tg-busca-oculto', role: 'status', 'aria-live': 'polite' });
+  acoes = el('div', { 'class': 'tg-busca-hc-acoes tg-busca-oculto' }, [aviso, btn, status]);
+  function limparStatus() { while (status.firstChild) { status.removeChild(status.firstChild); } status.classList.remove('tg-busca-hc-add-erro'); }
+  function pintar() {
+    var parte, k, b, outra;
+    for (parte in ui) {
+      if (!Object.prototype.hasOwnProperty.call(ui, parte)) { continue; }
+      for (k = 0; k < ui[parte].botoes.length; k++) {
+        b = ui[parte].botoes[k];
+        b.setAttribute('aria-pressed', b.textContent === sel[parte] ? 'true' : 'false');
+        if (b.textContent === sel[parte]) { b.classList.add('tg-busca-hc-tam-sel'); } else { b.classList.remove('tg-busca-hc-tam-sel'); }
+      }
+      outra = parte === 'cima' ? 'baixo' : 'cima';
+      if (sel[outra] && !sel[parte]) {
+        tgTexto(ui[parte].aviso, 'Agora escolha o tamanho ' + tgCjArtigo(c[parte]) + ' ' + tgCjNomeCurto(c[parte]));
+        ui[parte].aviso.classList.remove('tg-busca-oculto');
+      } else { ui[parte].aviso.classList.add('tg-busca-oculto'); }
+    }
+    if (sel.cima && sel.baixo) { acoes.classList.remove('tg-busca-oculto'); } else { acoes.classList.add('tg-busca-oculto'); }
+  }
+  btn.addEventListener('click', function () {
+    var tc = sel.cima, tb = sel.baixo, r1;
+    if (ocupado || !tc || !tb) { return; }
+    ocupado = true; limparStatus();
+    btn.setAttribute('aria-busy', 'true'); avisoFechar(); tgTexto(btn, 'ADICIONANDO…');
+    // uma peca depois da outra (duas adicoes ao mesmo tempo podem se atropelar no carrinho da plataforma)
+    tgRgAdicionar(c.cima, tc).then(function (r) { r1 = r; return tgRgAdicionar(c.baixo, tb); }).then(function (r2) {
+      var falhou = [], ver;
+      ocupado = false; btn.removeAttribute('aria-busy');
+      if (!r1.ok) { falhou.push(tgCjNomeCurto(c.cima) + ' (' + tc + ')'); }
+      if (!r2.ok) { falhou.push(tgCjNomeCurto(c.baixo) + ' (' + tb + ')'); }
+      emitir('tg_busca_conj_add', { ok: !falhou.length, falhas: falhou.length });
+      tgTexto(btn, 'ADICIONAR CONJUNTO À SACOLA');
+      if (!falhou.length) { avisoMostrar(); return; }
+      status.classList.add('tg-busca-hc-add-erro');
+      if (falhou.length === 2) { tgTexto(status, 'Não deu para adicionar o conjunto agora. Tente de novo.'); }
+      else { tgTexto(status, 'Não deu para adicionar: ' + falhou[0] + '. A outra peça foi para a sacola.'); }
+    });
+  });
+  ctl = {
+    acoes: acoes,
+    registrar: function (parte, o) { ui[parte] = o; },
+    escolher: function (parte, t) {
+      if (ocupado) { return; }
+      sel[parte] = sel[parte] === t ? null : t;
+      limparStatus(); avisoFechar(); tgTexto(btn, 'ADICIONAR CONJUNTO À SACOLA');
+      pintar();
+    }
+  };
+  return ctl;
+}
+// soVer (Danilo, 26/11): na vitrine da busca inicial o conjunto e so para ver (card + modal da peca); escolher tamanho e adicionar o conjunto
+// so na pagina "Ver todos os conjuntos"
+function tgHConjunto(c, pos, secao, soVer) {
+  var ctl = soVer ? null : tgCjControle(c),
+    a = tgHCard(c.cima, { conjunto: c, posicao: pos, secao: secao, conjCtl: ctl, parte: 'cima' }),
+    b = tgHCard(c.baixo, { conjunto: c, posicao: pos, secao: secao, conjCtl: ctl, parte: 'baixo' });
   if (!a || !b) { return null; }
-  return el('div', { 'class': 'tg-busca-hc-par', role: 'group', 'aria-label': 'Conjunto ' + (c.cor || '') }, [a, b]);
+  // o botao do conjunto fica logo abaixo da peca de baixo, na largura do card (na coluna de texto ele nao cabe a 360-390 px)
+  return el('div', { 'class': 'tg-busca-hc-par', role: 'group', 'aria-label': 'Conjunto ' + (c.cor || '') }, [a, b, ctl ? ctl.acoes : null]);
 }
 
 // ---------------------------------------------------------------- pagina de Conjuntos (/search/?q=conjuntos)

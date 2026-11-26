@@ -2228,6 +2228,10 @@ function urlProduto(s) { return typeof s === 'string' && TG_RE_HANDLE.test(s) ? 
 function urlImagem(i) { return typeof i === 'string' && TG_RE_IMG.test(i) ? TG_IMG + i : null; }
 function urlBusca(termo) { return '/search/?q=' + encodeURIComponent(String(termo)); }
 
+// 26/11: marcas da medicao (rastreio.js) chamadas pelas telas; sem o modulo de medicao, nao fazem nada
+function tgMedirOrigem(tipo) { try { if (typeof tgOrigemMarcar === 'function') { tgOrigemMarcar(tipo); } } catch (e) {} }
+function tgMedirTermo(q) { try { if (typeof tgTermoGuardar === 'function') { tgTermoGuardar(tgTermo(q)); } } catch (e) {} }
+
 // Foto do item: sem nome de imagem valido nao existe <img>. O alt e atributo (texto), nunca HTML.
 // Liga/desliga a classe que esconde a busca nativa enquanto a nossa nao assumiu (o CSS esta no topo do tema e em estilos.js).
 function tgPend(ligar) {
@@ -2319,7 +2323,40 @@ function linhaPix(v) { var x = precoPix(v); return x ? el('span', { 'class': 'tg
  * nunca o texto digitado nem a URL.
  */
 var TG_GA4 = 'G-QK83GW3WCR';
-var TG_PARAMS = ['engine_version', 'engine_mode', 'engine_group', 'page_type', 'position', 'query_len', 'had_correction', 'results_count', 'rescue_type', 'reason'];
+var TG_PARAMS = ['engine_version', 'engine_mode', 'engine_group', 'page_type', 'position', 'query_len', 'had_correction', 'results_count', 'rescue_type', 'reason',
+  'search_term', 'origin', 'item_id', 'value', 'currency'];
+// 26/11 (Danilo autorizou o termo digitado, com filtro): o termo vai em minusculas, sem acento a mais que o digitado, ate 40 letras; nunca com @
+// (e-mail) nem com 5 ou mais digitos seguidos (telefone, CPF, CEP, numero de pedido).
+var TG_TERMO_CHAVE = 'tg_busca_termo', TG_ORIGEM_CHAVE = 'tg_busca_origem';
+function tgTermo(q) {
+  var t = String(q == null ? '' : q).toLowerCase().replace(/\s+/g, ' ').trim();
+  if (t.length < 2 || t.indexOf('@') >= 0 || /\d{5,}/.test(t.replace(/\s/g, ''))) { return undefined; }
+  return t.slice(0, 40);
+}
+// Termo da busca agora: o campo da busca aberta; senao o q da pagina de resultados; senao o ultimo da sessao (ate 30 min, para a peca
+// adicionada depois, no modal, ainda contar para a busca que a trouxe).
+function tgTermoAgora() {
+  var t, q, g;
+  try { if (typeof tgOv !== 'undefined' && tgOv && tgOv.aberto && tgOv.campo) { t = tgTermo(tgOv.campo.value); if (t) { return t; } } } catch (e) {}
+  try { if (/^\/search/.test(window.location.pathname)) { q = new URLSearchParams(window.location.search).get('q'); t = tgTermo(q); if (t) { tgTermoGuardar(t); return t; } } } catch (e) {}
+  try { g = JSON.parse(window.sessionStorage.getItem(TG_TERMO_CHAVE) || 'null'); if (g && typeof g.t === 'string' && Date.now() - g.em < 30 * 60 * 1000) { return tgTermo(g.t); } } catch (e) {}
+  return undefined;
+}
+function tgTermoGuardar(t) { try { if (t) { window.sessionStorage.setItem(TG_TERMO_CHAVE, JSON.stringify({ t: t, em: Date.now() })); } } catch (e) {} }
+// origem da busca: marcada no clique que leva aos resultados, lida uma vez na pagina seguinte (vale por 60 s)
+function tgOrigemMarcar(tipo) { try { window.sessionStorage.setItem(TG_ORIGEM_CHAVE, JSON.stringify({ o: String(tipo).slice(0, 40), em: Date.now() })); } catch (e) {} }
+var tgOrigemDaPagina = null;
+function tgOrigemLer() {
+  var g;
+  if (tgOrigemDaPagina !== null) { return tgOrigemDaPagina; }
+  tgOrigemDaPagina = 'url';
+  try {
+    g = JSON.parse(window.sessionStorage.getItem(TG_ORIGEM_CHAVE) || 'null');
+    window.sessionStorage.removeItem(TG_ORIGEM_CHAVE);
+    if (g && typeof g.o === 'string' && Date.now() - g.em < 60000) { tgOrigemDaPagina = g.o; }
+  } catch (e) {}
+  return tgOrigemDaPagina;
+}
 var tgFilaC = [], tgTimerC = 0;
 
 // Fila do Clarity: tenta a cada 250 ms por ate cerca de 10 s e nunca cria window.clarity.
@@ -2350,10 +2387,17 @@ function emitir(nome, params) {
     for (i = 0; i < TG_PARAMS.length; i++) {
       k = TG_PARAMS[i];
       if (params && Object.prototype.hasOwnProperty.call(params, k)) {
-        v = tgValor(params[k]);
+        // item_id: o codigo da peca na loja (9 digitos) e so numero, nunca dado pessoal; aceito so nesse formato (um id ou dois, do conjunto)
+        if (k === 'item_id') { v = /^\d{1,15}(\+\d{1,15})?$/.test(String(params[k])) ? String(params[k]) : undefined; }
+        else { v = tgValor(params[k]); }
         if (v !== undefined) { ev[k] = v; }
       }
     }
+    // 26/11: termo e origem em todo evento da busca (o termo so se nao veio pronto)
+    if (ev.search_term === undefined && /^tg_(busca|qv)_/.test(nome) && nome !== 'tg_busca_ativa' && nome !== 'tg_busca_off') { v = tgTermoAgora(); if (v) { ev.search_term = v; } }
+    else if (ev.search_term !== undefined) { ev.search_term = tgTermo(ev.search_term); if (ev.search_term === undefined) { delete ev.search_term; } }
+    if ((nome === 'tg_busca_pagina_view' || nome === 'tg_busca_resgate_view') && ev.origin === undefined) { ev.origin = tgOrigemLer(); }
+    if (ev.value !== undefined && ev.currency === undefined) { ev.currency = 'BRL'; }
     // Teste A/B (pacote D): todo evento tg_busca_* leva o grupo da visitante ('novo'), vindo do contexto do carregador. Sem grupo (modos preview/on), nada.
     if (typeof tgCtx !== 'undefined' && tgCtx && tgCtx.grupo === 'novo') { ev.engine_group = 'novo'; }
     try {
@@ -4284,7 +4328,7 @@ function tgQvAdicionar(S) {
   // v15: o modal fica aberto e confirma ali (antes fechava e abria a sacola do tema, que na busca inicial ficava atras do overlay da busca)
   tgAdicionarSacola(escolhido.variantId, 1, { productId: d.productId, abrirSacola: false, manterQuickView: true }).then(function (r) {
     if (r && r.ok) {
-      tgQvEmitir(S, 'tg_qv_add', { reason: 'ok' });
+      tgQvEmitir(S, 'tg_qv_add', { reason: 'ok', item_id: String(d.productId || (S.item && S.item.id) || ''), value: (function () { try { var pf = precoFinal(S.item); return pf ? pf.final : undefined; } catch (e) { return undefined; } })() });
       if (S.fechado) { return; }
       S.ocupado = false; S.msg = ''; S.msgErro = false;
       tgQvConfirmar(S);
@@ -4597,7 +4641,7 @@ function tgRecLimpar() { try { window.localStorage.removeItem(TG_REC_CHAVE); } c
 // origem: 'overlay' | 'pagina' | 'zero' (so vai para a medicao, no parametro reason). Devolve [<a class="tg-busca-chip">] (so os chips validos).
 function tgChipsNos(origem) {
   var lista = typeof TG_CHIPS_EM_ALTA !== 'undefined' && Array.isArray(TG_CHIPS_EM_ALTA) ? TG_CHIPS_EM_ALTA : [], nos = [], i, c, href, a;
-  function ligar(no, pos) { no.addEventListener('click', function () { try { emitir('tg_busca_chip', { position: pos, reason: origem }); } catch (e) {} }); }
+  function ligar(no, pos) { no.addEventListener('click', function () { try { tgMedirOrigem('chip:' + origem); emitir('tg_busca_chip', { position: pos, reason: origem }); } catch (e) {} }); }
   for (i = 0; i < lista.length; i++) {
     c = lista[i];
     if (!c || typeof c.rotulo !== 'string' || !c.rotulo) { continue; }
@@ -4693,7 +4737,7 @@ function tgAcTermosBloco(termos, consulta, input, pegarCaixa) {
   function ligar(a2, tx, pos) {
     a2.addEventListener('click', function () {
       tgRecSalvar(tx);
-      try { emitir('tg_busca_termo_click', { position: pos, query_len: consulta.length }); } catch (e) {}
+      try { tgMedirOrigem('sugestao'); emitir('tg_busca_termo_click', { position: pos, query_len: consulta.length }); } catch (e) {}
     });
   }
   for (i = 0; i < termos.length; i++) {
@@ -4740,6 +4784,7 @@ function tgAcLinha(p, posicao, consulta, corrigiu, info, extra) {
     if (curada) { ev.rescue_type = 'curada'; }
     if (esgotado) { ev.rescue_type = 'esgotado'; }
     tgRecSalvar(consulta);
+    ev.item_id = String(p.id); ev.search_term = consulta; tgMedirTermo(consulta);
     try { emitir('tg_busca_sugestao_click', ev); } catch (e) {}
     // QA 3.2 (25/11): tgAcAbrirQv - a peca abre no modal, sem sair da busca (antes ia para a pagina da peca e a sessao de busca acabava)
     try {
@@ -4980,7 +5025,7 @@ function tgTapeteSecao(titulo, cards, rodape, id) {
 function tgTapeteTodosLink(id, cls) {
   var rot = TG_TAPETE_ROTULO_TODOS[id] || 'Ver todos', a;
   a = el('a', { 'class': cls, href: id === 'novidades' ? (typeof TG_NOVIDADES_CATEGORIA === 'string' ? TG_NOVIDADES_CATEGORIA : '/novidades/') : urlBusca(TG_TAPETE_BUSCA_TODOS[id] || id) }, cls === 'tg-busca-car-todos' ? [el('span', { 'class': 'tg-busca-car-todos-txt' }, [rot]), el('span', { 'class': 'tg-busca-car-seta', 'aria-hidden': 'true' })] : [rot]);
-  a.addEventListener('click', function () { try { emitir('tg_busca_tapete_todos', { reason: id }); tgAcBuscando(); } catch (e) {} });
+  a.addEventListener('click', function () { try { tgMedirOrigem('ver_todos:' + id); emitir('tg_busca_tapete_todos', { reason: id }); tgAcBuscando(); } catch (e) {} });
   return a;
 }
 function tgTapeteCarrossel(titulo, colunas, id) {
@@ -5041,7 +5086,7 @@ function tgTapeteChipConj(chipsUl) {
   if (!chipsUl || !chipsUl.parentNode || chipsUl.querySelector('[data-tg-chip="conjuntos"]')) { return; }
   a = el('a', { 'class': 'tg-busca-chip', href: urlBusca('conjuntos') }, ['Conjuntos']);
   a.setAttribute('data-tg-chip', 'conjuntos');
-  a.addEventListener('click', function () { try { emitir('tg_busca_chip', { reason: 'conjuntos' }); } catch (e) {} });
+  a.addEventListener('click', function () { try { tgMedirOrigem('chip:conjuntos'); emitir('tg_busca_chip', { reason: 'conjuntos' }); } catch (e) {} });
   li = el('li', null, [a]);
   chipsUl.insertBefore(li, chipsUl.lastChild || null);
 }
@@ -5270,6 +5315,7 @@ function tgOvMontar() {
     var v = campo.value.trim();
     if (!v) { try { ev.preventDefault(); } catch (e) {} return; }
     tgRecSalvar(v);
+    tgMedirOrigem('digitado'); tgMedirTermo(v);
   });
   raiz.addEventListener('click', function (ev) { if (ev.target === raiz) { try { tgOvFechar(); } catch (e) {} } });
   raiz.addEventListener('keydown', function (ev) {
@@ -6064,7 +6110,7 @@ function tgCjControle(c) {
       ocupado = false; btn.removeAttribute('aria-busy');
       if (!r1.ok) { falhou.push(tgCjNomeCurto(c.cima) + ' (' + tc + ')'); }
       if (!r2.ok) { falhou.push(tgCjNomeCurto(c.baixo) + ' (' + tb + ')'); }
-      emitir('tg_busca_conj_add', { ok: !falhou.length, falhas: falhou.length });
+      emitir('tg_busca_conj_add', { reason: !falhou.length ? 'ok' : (falhou.length === 2 ? 'erro' : 'parcial'), item_id: String(c.cima.id) + '+' + String(c.baixo.id), value: (function () { try { return (r1.ok ? precoFinal(c.cima).final : 0) + (r2.ok ? precoFinal(c.baixo).final : 0); } catch (e) { return undefined; } })() });
       tgTexto(btn, 'ADICIONAR CONJUNTO À SACOLA');
       if (!falhou.length) { avisoMostrar(); return; }
       status.classList.add('tg-busca-hc-add-erro');
@@ -8710,7 +8756,7 @@ function tgQvAdicionar(S) {
   // v15: o modal fica aberto e confirma ali (antes fechava e abria a sacola do tema, que na busca inicial ficava atras do overlay da busca)
   tgAdicionarSacola(escolhido.variantId, 1, { productId: d.productId, abrirSacola: false, manterQuickView: true }).then(function (r) {
     if (r && r.ok) {
-      tgQvEmitir(S, 'tg_qv_add', { reason: 'ok' });
+      tgQvEmitir(S, 'tg_qv_add', { reason: 'ok', item_id: String(d.productId || (S.item && S.item.id) || ''), value: (function () { try { var pf = precoFinal(S.item); return pf ? pf.final : undefined; } catch (e) { return undefined; } })() });
       if (S.fechado) { return; }
       S.ocupado = false; S.msg = ''; S.msgErro = false;
       tgQvConfirmar(S);
@@ -8958,7 +9004,7 @@ function tgRecLimpar() { try { window.localStorage.removeItem(TG_REC_CHAVE); } c
 // origem: 'overlay' | 'pagina' | 'zero' (so vai para a medicao, no parametro reason). Devolve [<a class="tg-busca-chip">] (so os chips validos).
 function tgChipsNos(origem) {
   var lista = typeof TG_CHIPS_EM_ALTA !== 'undefined' && Array.isArray(TG_CHIPS_EM_ALTA) ? TG_CHIPS_EM_ALTA : [], nos = [], i, c, href, a;
-  function ligar(no, pos) { no.addEventListener('click', function () { try { emitir('tg_busca_chip', { position: pos, reason: origem }); } catch (e) {} }); }
+  function ligar(no, pos) { no.addEventListener('click', function () { try { tgMedirOrigem('chip:' + origem); emitir('tg_busca_chip', { position: pos, reason: origem }); } catch (e) {} }); }
   for (i = 0; i < lista.length; i++) {
     c = lista[i];
     if (!c || typeof c.rotulo !== 'string' || !c.rotulo) { continue; }
@@ -9054,7 +9100,7 @@ function tgAcTermosBloco(termos, consulta, input, pegarCaixa) {
   function ligar(a2, tx, pos) {
     a2.addEventListener('click', function () {
       tgRecSalvar(tx);
-      try { emitir('tg_busca_termo_click', { position: pos, query_len: consulta.length }); } catch (e) {}
+      try { tgMedirOrigem('sugestao'); emitir('tg_busca_termo_click', { position: pos, query_len: consulta.length }); } catch (e) {}
     });
   }
   for (i = 0; i < termos.length; i++) {
@@ -9101,6 +9147,7 @@ function tgAcLinha(p, posicao, consulta, corrigiu, info, extra) {
     if (curada) { ev.rescue_type = 'curada'; }
     if (esgotado) { ev.rescue_type = 'esgotado'; }
     tgRecSalvar(consulta);
+    ev.item_id = String(p.id); ev.search_term = consulta; tgMedirTermo(consulta);
     try { emitir('tg_busca_sugestao_click', ev); } catch (e) {}
     // QA 3.2 (25/11): tgAcAbrirQv - a peca abre no modal, sem sair da busca (Ctrl/Cmd/Shift/botao do meio seguem para a pagina da peca)
     try {
@@ -9392,7 +9439,7 @@ function tgTapeteChipConj(chipsUl) {
   if (!chipsUl || !chipsUl.parentNode || chipsUl.querySelector('[data-tg-chip="conjuntos"]')) { return; }
   a = el('a', { 'class': 'tg-busca-chip', href: urlBusca('conjuntos') }, ['Conjuntos']);
   a.setAttribute('data-tg-chip', 'conjuntos');
-  a.addEventListener('click', function () { try { emitir('tg_busca_chip', { reason: 'conjuntos' }); } catch (e) {} });
+  a.addEventListener('click', function () { try { tgMedirOrigem('chip:conjuntos'); emitir('tg_busca_chip', { reason: 'conjuntos' }); } catch (e) {} });
   li = el('li', null, [a]);
   chipsUl.insertBefore(li, chipsUl.lastChild || null);
 }
@@ -9620,6 +9667,7 @@ function tgOvMontar() {
     var v = campo.value.trim();
     if (!v) { try { ev.preventDefault(); } catch (e) {} return; }
     tgRecSalvar(v);
+    tgMedirOrigem('digitado'); tgMedirTermo(v);
   });
   raiz.addEventListener('click', function (ev) { if (ev.target === raiz) { try { tgOvFechar(); } catch (e) {} } });
   raiz.addEventListener('keydown', function (ev) {

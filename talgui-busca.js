@@ -735,11 +735,22 @@ function tgBuscaCurada(busca, catalogo, prep, limite, aceitos) {
 // "Sold out" (2.312 esgotadas em 17/11: 1.576 assim), então não serve para achar similares.
 // ---------------------------------------------------------------------------------------------------------------------
 var TG_ESG_MAX = 3;            // peças esgotadas mostradas no máximo
-var TG_ESG_SIMILARES = 12;     // similares mostrados no máximo (v14, Danilo 24/11: pelo menos 12 opções do mesmo tipo)
+var TG_ESG_SIMILARES = 24;     // similares mostrados no máximo (27/11, Danilo: grid amplo do mesmo grupo; era 12)
 var TG_ESG_MIN_TAMANHOS = 3;   // grade cheia = pelo menos 3 tamanhos em estoque
 var TG_ESG_FREQ_MAX = 30;      // palavra presente em mais peças esgotadas que isso é genérica demais para pedir esgotado
 var TG_ESG_PALAVRA_MIN = 4;    // palavra da busca com menos letras que isso nunca pede esgotado
 var TG_SELO_ESGOTADO = 'Tamanho esgotado';
+// tipos de peca que a busca pode dizer (singular, como tgTipoPeca devolve)
+var TG_TIPOS_PECA_ESG = ['vestido', 'blusa', 'calca', 'corset', 'corselet', 'macacao', 'macacoe', 'macaquinho', 'cropped', 'saia', 'camisa', 'colete', 'regata', 'blazer', 'jaqueta', 'casaco', 'body', 'short', 'bermuda', 'top', 'bata', 'cardigan', 'kimono'];
+// 27/11: tecido da peca, pela curadoria (tag chip:<tecido>) ou pelo nome
+var TG_TECIDOS_ESG = ['malha', 'alfaiataria', 'tricoline', 'crepe', 'bengaline', 'linho', 'veludo', 'tule', 'cetim', 'sarja', 'trico', 'laise', 'viscolinho', 'viscose', 'seda', 'jeans', 'renda', 'moletom', 'jacquard'];
+function tgTecidoDe(it) {
+  var g = it && Array.isArray(it.g) ? it.g : [], i, w;
+  for (i = 0; i < g.length; i++) { w = String(g[i]); if (w.indexOf('chip:') === 0 && TG_TECIDOS_ESG.indexOf(w.slice(5)) >= 0) return w.slice(5); }
+  w = ' ' + normalizeText(it && it.n).replace(/acetinad[oa]/g, 'cetim').replace(/sarjad[oa]/g, 'sarja').replace(/alfaitaria/g, 'alfaiataria') + ' ';
+  for (i = 0; i < TG_TECIDOS_ESG.length; i++) { if (w.indexOf(' ' + TG_TECIDOS_ESG[i] + ' ') >= 0) return TG_TECIDOS_ESG[i]; }
+  return '';
+}
 // Categorias de vitrine ou de sistema que não dizem o tipo da peça (não servem para "mesma categoria" nos similares).
 var TG_ESG_CATEGORIAS_IGNORADAS = ['sold out', 'outlet', 'novidades', 'novidade', 'ultimas oportunidades', 'best sellers', 'best seller', 'geral', 'queridinhos da cindy', 'kits com desconto'];
 var TG_ESG_PALAVRAS_VAZIAS = ['em', 'de', 'da', 'do', 'das', 'dos', 'com', 'sem', 'que', 'um', 'uma', 'e', 'a', 'o', 'para'];
@@ -778,7 +789,7 @@ function tgGrauEsg(qt, nt, folgado) {
   var ql = qt.length, d;
   if (nt === qt) return 3;
   if (ql >= TG_ESG_PALAVRA_MIN && nt.indexOf(qt) === 0) return 2;
-  if (ql >= TG_ESG_PALAVRA_MIN && nt.length >= TG_ESG_PALAVRA_MIN && qt.indexOf(nt) === 0) return 2;
+  if (ql >= TG_ESG_PALAVRA_MIN && nt.length >= TG_ESG_PALAVRA_MIN && qt.indexOf(nt) === 0 && ql - nt.length <= 2) return 2; // 27/11: so plural ("betania" nao e "beta")
   if (folgado) {
     d = levenshtein(qt, nt, ql <= 4 ? 1 : 2);
     if (d === 1 || (d === 2 && ql >= 5)) return 1;
@@ -913,6 +924,7 @@ function tgSimilaresEsgotada(esg, catalogo, prep, max) {
   ref = esg.tokens.filter(function (t, n) { return n > 1 && TG_ESG_PALAVRAS_VAZIAS.indexOf(t) < 0; });
   assin = tgCorAssinatura(esg.item);
   comp = tgComprimentoDoNome(esg.tokens);
+  var tec = tgTecidoDe(esg.item);
   for (i = 0; i < catalogo.length; i++) {
     it = catalogo[i];
     if (!it || typeof it !== 'object' || !tgDisponivel(it) || !Array.isArray(it.sz) || it.sz.length < TG_ESG_MIN_TAMANHOS || tgTipoPeca(it.n) !== tipo) continue;
@@ -922,6 +934,7 @@ function tgSimilaresEsgotada(esg, catalogo, prep, max) {
     for (k = 0; k < ref.length; k++) { if (nm.indexOf(ref[k]) >= 0) comum++; }
     sc = 0;
     if (assin && a === assin) sc += 100;
+    if (tec && tgTecidoDe(it) === tec) sc += 50; // 27/11: mesmo tecido (cor + tecido primeiro, depois so cor, depois so tecido)
     if (comp && tgComprimentoDoNome(nm) === comp) sc += 10;
     if (sc > 0) sc += comum;
     cand.push({ item: it, sc: sc, pos: i, cor: a, mod: normalizeText(tgModeloCor(it.n).modelo) });
@@ -962,6 +975,13 @@ function tgBuscaEsgotado(qTokens, catalogo, prep, esgotados, limite) {
   if (!pedem.length) return null;
   idx = tgIndiceEsgotados(esgotados, catalogo);
   cand = idx.lista;
+  // 27/11: a busca diz o tipo ("vestido ...")? so esgotada daquele tipo
+  (function () {
+    var tq = '', j;
+    for (j = 0; j < qTokens.length && !tq; j++) { if (TG_ESG_GENERICAS[qTokens[j]] && TG_TIPOS_PECA_ESG.indexOf(tgTipoPeca(qTokens[j])) >= 0) { tq = tgTipoPeca(qTokens[j]); } }
+    if (tq) { cand = cand.filter(function (e) { return e.tipo === tq; }); }
+  })();
+  if (!cand.length) return null;
   function casa(minimo, qtx) { return function (e) { return tgMelhorGrau(qtx, e.tokens) >= minimo; }; }
   for (i = 0; i < nominais.length; i++) {
     qt = nominais[i];
@@ -2864,6 +2884,15 @@ var TG_CSS_PAGINA = [
   '.tg-busca-esg-frase{margin:18px auto 22px;max-width:560px;padding:0 8px;text-align:center;font-size:14px;line-height:1.5;color:var(--tgb-cor-texto)}',
   '.tg-busca-esg-frase strong{font-weight:600}',
   '.tg-busca-ov-corpo .tg-busca-esg-frase{margin:14px 0 16px;text-align:left;padding:0}',
+  // 27/11: esgotada em miniatura (preto e branco) com Avise-me quando chegar
+  '.tg-busca-esg-mini{display:flex;align-items:center;gap:12px;max-width:560px;margin:16px auto 0;padding:10px;border:1px solid #e6e1da;background:#fafafa}',
+  '.tg-busca-ov-corpo .tg-busca-esg-mini{margin:14px 0 0}',
+  'a.tg-busca-esg-mini-img{flex:none;display:block;width:64px}',
+  '.tg-busca-esg-mini-foto{display:block;width:64px;height:86px;object-fit:cover;background:#eee;filter:grayscale(1);opacity:.85}',
+  '.tg-busca-esg-mini-inf{min-width:0;flex:1}',
+  '.tg-busca-esg-mini-selo{display:inline-block;margin:0 0 4px;padding:2px 6px;background:#111;color:#fff;font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}',
+  'p.tg-busca-esg-mini-nome{margin:0 0 8px;font-size:13px;line-height:1.3;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  'a.tg-busca-esg-avise{display:inline-flex;align-items:center;min-height:36px;padding:0 14px;border:1px solid #111;background:#fff;color:#111;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;text-decoration:none}',
   '.tg-busca-esg .tg-busca-grade{margin-top:4px}',
   // pagina de busca curada (blocos) e estado sem resultado
   '.tg-busca-curada{max-width:1400px;margin:20px auto;padding:0 var(--tgb-pad-pagina)}',
@@ -4825,8 +4854,26 @@ function tgBlocoTitulo(titulo, total, tag) {
 
 // Frase da peca esgotada (v14, Danilo 24/11): a esgotada vira so texto; o nome e o da 1a esgotada achada (a mais parecida com o que foi digitado).
 function tgEsgFrase(e) {
-  var nome = e && e.itens && e.itens[0] && typeof e.itens[0].n === 'string' ? e.itens[0].n : '';
-  return el('p', { 'class': 'tg-busca-esg-frase', role: 'status' }, nome ? ['A peça “', el('strong', null, [nome]), '” está esgotada, confira outras opções abaixo:'] : ['Esta peça está esgotada, confira outras opções abaixo:']);
+  var it = e && e.itens && e.itens[0] ? e.itens[0] : null, nome = it && typeof it.n === 'string' ? it.n : '', mini = null, href, f;
+  // 27/11: a esgotada em miniatura (foto em preto e branco, nome, "Esgotada" e Avise-me quando chegar), para a cliente e o atendimento reconhecerem a peca
+  href = it ? urlProduto(it.s) : null;
+  if (it && href) {
+    f = foto(it, 'tg-busca-esg-mini-foto');
+    var avise = el('a', { 'class': 'tg-busca-esg-avise', href: href + '?tg_avise=1' }, ['Avise-me quando chegar']);
+    avise.addEventListener('click', function () { try { emitir('tg_busca_esg_avise', { item_id: String(it.id || '') }); } catch (x) {} });
+    mini = el('div', { 'class': 'tg-busca-esg-mini' }, [
+      el('a', { 'class': 'tg-busca-esg-mini-img', href: href, 'aria-hidden': 'true', tabindex: '-1' }, [f || el('span', { 'class': 'tg-busca-esg-mini-foto' })]),
+      el('div', { 'class': 'tg-busca-esg-mini-inf' }, [
+        el('span', { 'class': 'tg-busca-esg-mini-selo' }, ['Esgotada']),
+        el('p', { 'class': 'tg-busca-esg-mini-nome' }, [nome]),
+        avise
+      ])
+    ]);
+  }
+  return el('div', { 'class': 'tg-busca-esg-topo' }, [
+    mini,
+    el('p', { 'class': 'tg-busca-esg-frase', role: 'status' }, nome ? ['A peça ', el('strong', null, [nome]), ' está esgotada. Outras opções abaixo podem te interessar:'] : ['Esta peça está esgotada. Outras opções abaixo podem te interessar:'])
+  ]);
 }
 
 // Esgotado nominal (REL-04; v14): a frase da esgotada e, abaixo, as parecidas (mesmo tipo, grade cheia). A esgotada nao vira linha.
@@ -5500,7 +5547,7 @@ function ligarAutocomplete() {
  * tgQuickViewPrefetch, tgVariantesDoProduto, tgAdicionarSacola) sao chamados de forma defensiva (typeof ... === 'function').
  */
 var TG_RG_LIMITE = 4;
-var TG_RG_ESG_LIMITE = 12; // esgotado nominal (v14): a esgotada vira frase; ate 12 parecidas do mesmo tipo
+var TG_RG_ESG_LIMITE = 24; // esgotado nominal: a esgotada vira frase + miniatura; ate 24 parecidas do mesmo grupo (27/11, Danilo: grid amplo; era 12)
 var TG_PG_LIMITE = 1000;  // a pagina de resultados recebe a lista inteira; os cards entram em lotes
 var TG_PG_LOTE = 24;
 var TG_PG_ESCONDE_NATIVO = true;
@@ -7236,6 +7283,15 @@ var TG_CSS_PAGINA = [
   '.tg-busca-esg-frase{margin:18px auto 22px;max-width:560px;padding:0 8px;text-align:center;font-size:14px;line-height:1.5;color:var(--tgb-cor-texto)}',
   '.tg-busca-esg-frase strong{font-weight:600}',
   '.tg-busca-ov-corpo .tg-busca-esg-frase{margin:14px 0 16px;text-align:left;padding:0}',
+  // 27/11: esgotada em miniatura (preto e branco) com Avise-me quando chegar
+  '.tg-busca-esg-mini{display:flex;align-items:center;gap:12px;max-width:560px;margin:16px auto 0;padding:10px;border:1px solid #e6e1da;background:#fafafa}',
+  '.tg-busca-ov-corpo .tg-busca-esg-mini{margin:14px 0 0}',
+  'a.tg-busca-esg-mini-img{flex:none;display:block;width:64px}',
+  '.tg-busca-esg-mini-foto{display:block;width:64px;height:86px;object-fit:cover;background:#eee;filter:grayscale(1);opacity:.85}',
+  '.tg-busca-esg-mini-inf{min-width:0;flex:1}',
+  '.tg-busca-esg-mini-selo{display:inline-block;margin:0 0 4px;padding:2px 6px;background:#111;color:#fff;font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}',
+  'p.tg-busca-esg-mini-nome{margin:0 0 8px;font-size:13px;line-height:1.3;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  'a.tg-busca-esg-avise{display:inline-flex;align-items:center;min-height:36px;padding:0 14px;border:1px solid #111;background:#fff;color:#111;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;text-decoration:none}',
   '.tg-busca-esg .tg-busca-grade{margin-top:4px}',
   // pagina de busca curada (blocos) e estado sem resultado
   '.tg-busca-curada{max-width:1400px;margin:20px auto;padding:0 var(--tgb-pad-pagina)}',
@@ -9188,8 +9244,26 @@ function tgBlocoTitulo(titulo, total, tag) {
 
 // Frase da peca esgotada (v14, Danilo 24/11): a esgotada vira so texto; o nome e o da 1a esgotada achada (a mais parecida com o que foi digitado).
 function tgEsgFrase(e) {
-  var nome = e && e.itens && e.itens[0] && typeof e.itens[0].n === 'string' ? e.itens[0].n : '';
-  return el('p', { 'class': 'tg-busca-esg-frase', role: 'status' }, nome ? ['A peça “', el('strong', null, [nome]), '” está esgotada, confira outras opções abaixo:'] : ['Esta peça está esgotada, confira outras opções abaixo:']);
+  var it = e && e.itens && e.itens[0] ? e.itens[0] : null, nome = it && typeof it.n === 'string' ? it.n : '', mini = null, href, f;
+  // 27/11: a esgotada em miniatura (foto em preto e branco, nome, "Esgotada" e Avise-me quando chegar), para a cliente e o atendimento reconhecerem a peca
+  href = it ? urlProduto(it.s) : null;
+  if (it && href) {
+    f = foto(it, 'tg-busca-esg-mini-foto');
+    var avise = el('a', { 'class': 'tg-busca-esg-avise', href: href + '?tg_avise=1' }, ['Avise-me quando chegar']);
+    avise.addEventListener('click', function () { try { emitir('tg_busca_esg_avise', { item_id: String(it.id || '') }); } catch (x) {} });
+    mini = el('div', { 'class': 'tg-busca-esg-mini' }, [
+      el('a', { 'class': 'tg-busca-esg-mini-img', href: href, 'aria-hidden': 'true', tabindex: '-1' }, [f || el('span', { 'class': 'tg-busca-esg-mini-foto' })]),
+      el('div', { 'class': 'tg-busca-esg-mini-inf' }, [
+        el('span', { 'class': 'tg-busca-esg-mini-selo' }, ['Esgotada']),
+        el('p', { 'class': 'tg-busca-esg-mini-nome' }, [nome]),
+        avise
+      ])
+    ]);
+  }
+  return el('div', { 'class': 'tg-busca-esg-topo' }, [
+    mini,
+    el('p', { 'class': 'tg-busca-esg-frase', role: 'status' }, nome ? ['A peça ', el('strong', null, [nome]), ' está esgotada. Outras opções abaixo podem te interessar:'] : ['Esta peça está esgotada. Outras opções abaixo podem te interessar:'])
+  ]);
 }
 
 // Esgotado nominal (REL-04; v14): a frase da esgotada e, abaixo, as parecidas (mesmo tipo, grade cheia). A esgotada nao vira linha.
@@ -9844,7 +9918,7 @@ function ligarAutocomplete() {
  * com ~70% da largura e da altura, deixando a vitrine a vista.
  */
 var TG_RG_LIMITE = 4;
-var TG_RG_ESG_LIMITE = 12; // esgotado nominal (v14): a esgotada vira frase; ate 12 parecidas do mesmo tipo
+var TG_RG_ESG_LIMITE = 24; // esgotado nominal: a esgotada vira frase + miniatura; ate 24 parecidas do mesmo grupo (27/11, Danilo: grid amplo; era 12)
 var TG_PG_LIMITE = 1000;  // a pagina de resultados recebe a lista inteira; os cards entram em lotes
 var TG_PG_LOTE = 24;
 var TG_PG_ESCONDE_NATIVO = true;
@@ -11406,6 +11480,25 @@ function iniciarBusca() {
     } catch (e) {}
   } catch (e) {}
 }
+
+function tgAviseAbrir() {
+  var n = 0, t;
+  try { if (!/^\/produtos\//.test(window.location.pathname) || !/[?&]tg_avise=1(?:&|$)/.test(window.location.search)) { return; } } catch (e) { return; }
+  t = setInterval(function () {
+    var b;
+    try {
+      b = document.querySelector('[id^="cheguei-alert-div"]');
+      if (b && b.getBoundingClientRect().height > 0) {
+        clearInterval(t);
+        try { b.scrollIntoView({ block: 'center' }); } catch (e1) {}
+        setTimeout(function () { try { (b.querySelector('[class]') || b).click(); } catch (e2) {} }, 400);
+        return;
+      }
+    } catch (e3) {}
+    if (++n > 48) { clearInterval(t); }
+  }, 250);
+}
+try { tgAviseAbrir(); } catch (e) {}
 
 try {
   if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', iniciarBusca); }
